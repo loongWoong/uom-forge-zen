@@ -4,15 +4,16 @@ import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { createApiMiddleware } from './server/api.ts'
 
-const envDirectory = path.resolve(import.meta.dirname, '..')
-for (const [key, value] of Object.entries(
-  loadEnv(
-    process.env.NODE_ENV === 'production' ? 'production' : 'development',
-    envDirectory,
-    '',
-  ),
-)) {
-  if (process.env[key] === undefined) process.env[key] = value
+// Vite exposes .env values to client code through import.meta.env, but the
+// server middleware uses process.env. Load .env files explicitly so the selected
+// provider can read its credentials server-side. Precedence: real environment >
+// project-local .env > parent UOM .env (the first writer of a key wins).
+const projectRoot = path.resolve(import.meta.dirname)
+const envMode = process.env.NODE_ENV === 'production' ? 'production' : 'development'
+for (const dir of [projectRoot, path.resolve(projectRoot, '..')]) {
+  for (const [key, value] of Object.entries(loadEnv(envMode, dir, ''))) {
+    if (process.env[key] === undefined) process.env[key] = value
+  }
 }
 
 // The evidence reader is an independent project consumed as a git submodule, so a fresh
@@ -22,18 +23,35 @@ for (const [key, value] of Object.entries(
 // renderer only while the submodule is absent; once it is checked out the alias disappears
 // and the real QQDocEditor is used again with no code change.
 function evidenceReaderAlias(): string | null {
-  const projectRoot = path.resolve(import.meta.dirname)
-  const submodule = path.resolve(projectRoot, 'src/components/evidence/qq-doc-clone')
+  const root = path.resolve(import.meta.dirname)
+  const submodule = path.resolve(root, 'src/components/evidence/qq-doc-clone')
   const manifest = path.join(submodule, 'package.json')
   if (existsSync(manifest)) {
     try {
-      const pkg = JSON.parse(readFileSync(manifest, 'utf8')) as { module?: string; main?: string }
-      if (existsSync(path.join(submodule, pkg.module || pkg.main || 'index.js'))) return null
+      const pkg = JSON.parse(readFileSync(manifest, 'utf8')) as {
+        module?: string
+        main?: string
+        exports?: unknown
+      }
+      // Resolve the package entry: exports["."] (string or { import, default }),
+      // then legacy module/main, then a root index.js. A checked-out submodule
+      // with a resolvable entry keeps the real QQDocEditor; anything else falls
+      // back to the built-in read-only renderer.
+      const dot = (pkg.exports as Record<string, unknown> | undefined)?.['.']
+      const entry =
+        typeof dot === 'string'
+          ? dot
+          : dot && typeof dot === 'object'
+            ? ((dot as Record<string, unknown>).import as string) ||
+              ((dot as Record<string, unknown>).default as string)
+            : undefined
+      const resolved = entry || pkg.module || pkg.main || 'index.js'
+      if (existsSync(path.join(submodule, resolved))) return null
     } catch {
       // malformed manifest falls through to the fallback
     }
   }
-  return path.resolve(projectRoot, 'src/components/evidence/evidence-reader-fallback.jsx')
+  return path.resolve(root, 'src/components/evidence/evidence-reader-fallback.jsx')
 }
 
 const evidenceReaderFallback = evidenceReaderAlias()
@@ -55,5 +73,5 @@ export default defineConfig({
       },
     },
   ],
-  envDir: envDirectory,
+  envDir: projectRoot,
 })
