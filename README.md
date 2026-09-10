@@ -102,7 +102,11 @@ relations, actions, functions, rules, activities, questions and block-level evid
 
 The UI provider switch is saved locally for the next session. The default is DeepSeek;
 the server can set `UOM_LLM_PROVIDER=deepseek` as its default. DeepSeek credentials
-are loaded from the parent UOM `.env` and remain server-side.
+are loaded from the project or parent UOM `.env` and remain server-side. The
+provider switch in the UI shows the model name the server reports via
+`GET /api/config`（只含提供方与模型名，不含密钥），也可直接
+`curl http://127.0.0.1:5173/api/config` 自检；修改 `.env` 后 Vite 会自动重启并重新
+加载，无需整进程重启。
 All DeepSeek calls explicitly disable thinking with `thinking: { type: "disabled" }`
 while retaining streaming output and the configured `LLM_MODEL`.
 

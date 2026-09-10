@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AnalysisEvent } from '../shared/analysis.ts'
 import type { RunTurn } from './providers/types.ts'
-import { runProviderTurn, resolveProvider } from './providers/index.ts'
+import { runProviderTurn, resolveProvider, providerDescriptor } from './providers/index.ts'
 import { runStage } from './stages/index.ts'
 import { discuss } from './stages/discussion.ts'
 import {
@@ -28,6 +28,19 @@ export function createApiMiddleware(runTurn: RunTurn = runProviderTurn) {
     next: () => void,
   ): Promise<void> => {
     const pathname = (request.url || '').split('?')[0]
+    // Read-only, key-free provider descriptor so the effective provider/model can
+    // be verified from outside (the UI does not display the model name).
+    if (pathname === '/api/config') {
+      if (request.method !== 'GET') {
+        response.statusCode = 405
+        response.setHeader('allow', 'GET')
+        response.end('Method Not Allowed')
+        return
+      }
+      response.setHeader('content-type', 'application/json; charset=utf-8')
+      response.end(JSON.stringify(providerDescriptor()))
+      return
+    }
     if (
       !['/api/analyze', '/api/analyze/stream', '/api/discuss'].includes(
         pathname,

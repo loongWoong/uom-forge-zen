@@ -123,6 +123,17 @@ h4 {
   background: #e4ebf6;
   color: #293e61;
 }
+.provider-model {
+  align-self: center;
+  margin-left: 5px;
+  padding: 0 4px;
+  color: #8fa3bd;
+  font-size: 10.5px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .primary-button,
 .secondary-button,
 .stop-button {

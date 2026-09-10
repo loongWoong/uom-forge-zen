@@ -133,6 +133,21 @@ function App() {
       ? 'codex'
       : 'deepseek',
   )
+  // 服务端实际生效的模型名（/api/config 只返回提供方与模型名，不含密钥）。
+  // 提供方切换只改本地偏好，模型名始终以服务端环境为准。
+  const [serverModel, setServerModel] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/config')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((config: { model?: string } | null) => {
+        if (!cancelled && config?.model) setServerModel(config.model)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
   const busyRef = useRef(false)
   const abortRef = useRef<AbortController | null>(null)
   const cancelled = useRef(false)
@@ -736,6 +751,11 @@ function App() {
                 {value === 'codex' ? 'Codex' : 'DeepSeek'}
               </button>
             ))}
+            {serverModel ? (
+              <span className="provider-model" title="服务端 .env 配置的模型">
+                {serverModel}
+              </span>
+            ) : null}
           </div>
           <button
             className="icon-button"

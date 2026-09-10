@@ -145,3 +145,26 @@ test('SSE disconnect aborts an active inference call', async () => {
     await close(server)
   }
 })
+
+test('/api/config reports the effective provider and model without secrets', async () => {
+  const { server, url } = await serve(async () => '')
+  try {
+    const saved = { provider: process.env.UOM_LLM_PROVIDER, model: process.env.LLM_MODEL }
+    process.env.UOM_LLM_PROVIDER = 'deepseek'
+    process.env.LLM_MODEL = 'qwen3.8-flash'
+    try {
+      const response = await fetch(url + '/api/config')
+      assert.equal(response.status, 200)
+      const body = (await response.json()) as { provider: string; model: string }
+      assert.deepEqual(body, { provider: 'deepseek', model: 'qwen3.8-flash' })
+      assert.equal((await fetch(url + '/api/config', { method: 'POST' })).status, 405)
+    } finally {
+      if (saved.provider === undefined) delete process.env.UOM_LLM_PROVIDER
+      else process.env.UOM_LLM_PROVIDER = saved.provider
+      if (saved.model === undefined) delete process.env.LLM_MODEL
+      else process.env.LLM_MODEL = saved.model
+    }
+  } finally {
+    await close(server)
+  }
+})

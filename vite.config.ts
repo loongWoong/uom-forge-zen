@@ -8,13 +8,29 @@ import { createApiMiddleware } from './server/api.ts'
 // server middleware uses process.env. Load .env files explicitly so the selected
 // provider can read its credentials server-side. Precedence: real environment >
 // project-local .env > parent UOM .env (the first writer of a key wins).
-const projectRoot = path.resolve(import.meta.dirname)
-const envMode = process.env.NODE_ENV === 'production' ? 'production' : 'development'
-for (const dir of [projectRoot, path.resolve(projectRoot, '..')]) {
-  for (const [key, value] of Object.entries(loadEnv(envMode, dir, ''))) {
-    if (process.env[key] === undefined) process.env[key] = value
+// Vite re-evaluates this config on restart (config or .env changes) inside the
+// same process, where process.env persists. Keys injected by a previous load are
+// tracked and cleared first, so editing .env takes effect without a full
+// process restart; real environment variables are never tracked and always win.
+const injectedFromFiles = new Set<string>()
+function loadDotEnvDirectories(directories: string[], mode: string): void {
+  for (const key of injectedFromFiles) delete process.env[key]
+  injectedFromFiles.clear()
+  for (const dir of directories) {
+    for (const [key, value] of Object.entries(loadEnv(mode, dir, ''))) {
+      if (process.env[key] === undefined) {
+        process.env[key] = value
+        injectedFromFiles.add(key)
+      }
+    }
   }
 }
+
+const projectRoot = path.resolve(import.meta.dirname)
+loadDotEnvDirectories(
+  [projectRoot, path.resolve(projectRoot, '..')],
+  process.env.NODE_ENV === 'production' ? 'production' : 'development',
+)
 
 // The evidence reader is an independent project consumed as a git submodule, so a fresh
 // clone without `git submodule update --init` leaves an empty directory. A static import
