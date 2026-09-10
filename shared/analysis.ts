@@ -74,7 +74,7 @@ export type StageEvent =
   | (ProviderEvent & { part?: StagePart })
   | { type: 'model-plan'; part: 'semantic'; semanticPlan: string }
   | ({ type: 'understanding-narrative' } & Understanding)
-export type AnalysisRequest = { provider: ProviderId } & (
+export type AnalysisRequest = { provider: ProviderId; modelOverride?: string } & (
   | { stage: 'understand'; document: BusinessDocument }
   | { stage: 'model'; narrative: string; model?: unknown; instruction?: string }
   | { stage: 'compile'; semanticPlan: string }
@@ -91,6 +91,7 @@ export interface DiscussionRequest {
   document: BusinessDocument
   model: DiscussionContext
   messages: ChatMessage[]
+  modelOverride?: string
 }
 export interface AnalysisResults {
   understand: { understanding: Understanding }

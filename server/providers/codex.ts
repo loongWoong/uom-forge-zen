@@ -33,6 +33,7 @@ export function createCodexProvider(
   return async (prompt, options = {}) => {
     options.signal?.throwIfAborted()
     const config = codexConfigFromEnv(env)
+    if (options.model) config.model = options.model
     const timing = createTurnTiming(
       {
         provider: 'codex',

@@ -149,22 +149,92 @@ test('SSE disconnect aborts an active inference call', async () => {
 test('/api/config reports the effective provider and model without secrets', async () => {
   const { server, url } = await serve(async () => '')
   try {
-    const saved = { provider: process.env.UOM_LLM_PROVIDER, model: process.env.LLM_MODEL }
+    const saved = {
+      provider: process.env.UOM_LLM_PROVIDER,
+      model: process.env.LLM_MODEL,
+      url: process.env.LLM_API_URL,
+      key: process.env.LLM_API_KEY,
+    }
     process.env.UOM_LLM_PROVIDER = 'deepseek'
     process.env.LLM_MODEL = 'qwen3.8-flash'
+    process.env.LLM_API_URL = 'http://test.invalid/v1'
+    process.env.LLM_API_KEY = 'k'
     try {
       const response = await fetch(url + '/api/config')
       assert.equal(response.status, 200)
-      const body = (await response.json()) as { provider: string; model: string }
-      assert.deepEqual(body, { provider: 'deepseek', model: 'qwen3.8-flash' })
+      const body = (await response.json()) as {
+        provider: string
+        model: string
+        options: { value: string; model: string; ready: boolean }[]
+      }
+      assert.equal(body.provider, 'deepseek')
+      assert.equal(body.model, 'qwen3.8-flash')
+      assert.deepEqual(body.options, [
+        { value: 'deepseek', model: 'qwen3.8-flash', ready: true },
+        { value: 'codex', model: 'gpt-6-astra', ready: true },
+      ])
       assert.equal((await fetch(url + '/api/config', { method: 'POST' })).status, 405)
     } finally {
-      if (saved.provider === undefined) delete process.env.UOM_LLM_PROVIDER
-      else process.env.UOM_LLM_PROVIDER = saved.provider
-      if (saved.model === undefined) delete process.env.LLM_MODEL
-      else process.env.LLM_MODEL = saved.model
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
     }
   } finally {
+    await close(server)
+  }
+})
+
+test('modelOverride reaches the provider and rejects invalid values', async () => {
+  let seen: string | undefined
+  const { server, url } = await serve(async (prompt, options) => {
+    seen = options.model
+    return '## 业务概述\n说明。'
+  })
+  try {
+    const response = await post(url + '/api/analyze/stream', {
+      stage: 'understand',
+      provider: 'deepseek',
+      modelOverride: 'qwen3.8-flash',
+      document: { name: 'doc', blocks: [{ id: '1', text: 'text' }] },
+    })
+    const output = events(await response.text())
+    assert.equal(output.at(-1)?.type, 'result')
+    assert.equal(seen, 'qwen3.8-flash')
+
+    const invalid = await post(url + '/api/analyze/stream', {
+      stage: 'understand',
+      provider: 'deepseek',
+      modelOverride: 42,
+      document: { name: 'doc', blocks: [{ id: '1', text: 'text' }] },
+    })
+    // SSE 路径的校验错误以 error 事件返回，HTTP 仍为 200
+    const invalidEvents = events(await invalid.text())
+    assert.ok(
+      invalidEvents.some(
+        (event) => event.type === 'error' && event.error.includes('modelOverride'),
+      ),
+    )
+  } finally {
+    await close(server)
+  }
+})
+
+test('/api/models proxies the endpoint model list and reports failures', async () => {
+  const { server, url } = await serve(async () => '')
+  const saved = { url: process.env.LLM_API_URL, key: process.env.LLM_API_KEY }
+  process.env.LLM_API_URL = 'http://127.0.0.1:9/v1'
+  process.env.LLM_API_KEY = 'k'
+  try {
+    const failed = await fetch(url + '/api/models')
+    assert.equal(failed.status, 502)
+    const body = (await failed.json()) as { error?: string }
+    assert.ok(body.error)
+  } finally {
+    if (saved.url === undefined) delete process.env.LLM_API_URL
+    else process.env.LLM_API_URL = saved.url
+    if (saved.key === undefined) delete process.env.LLM_API_KEY
+    else process.env.LLM_API_KEY = saved.key
     await close(server)
   }
 })

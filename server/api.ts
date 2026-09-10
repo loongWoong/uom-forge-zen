@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AnalysisEvent } from '../shared/analysis.ts'
 import type { RunTurn } from './providers/types.ts'
-import { runProviderTurn, resolveProvider, providerDescriptor } from './providers/index.ts'
+import { runProviderTurn, resolveProvider, providerDescriptor, listEndpointModels } from './providers/index.ts'
 import { runStage } from './stages/index.ts'
 import { discuss } from './stages/discussion.ts'
 import {
@@ -39,6 +39,24 @@ export function createApiMiddleware(runTurn: RunTurn = runProviderTurn) {
       }
       response.setHeader('content-type', 'application/json; charset=utf-8')
       response.end(JSON.stringify(providerDescriptor()))
+      return
+    }
+    // Model ids offered by the configured OpenAI-compatible endpoint, for the
+    // UI's model switcher. Free-text input remains the fallback when this fails.
+    if (pathname === '/api/models') {
+      if (request.method !== 'GET') {
+        response.statusCode = 405
+        response.setHeader('allow', 'GET')
+        response.end('Method Not Allowed')
+        return
+      }
+      response.setHeader('content-type', 'application/json; charset=utf-8')
+      try {
+        response.end(JSON.stringify({ models: await listEndpointModels() }))
+      } catch (error) {
+        response.statusCode = 502
+        response.end(JSON.stringify({ error: errorMessage(error) }))
+      }
       return
     }
     if (
@@ -81,6 +99,13 @@ export function createApiMiddleware(runTurn: RunTurn = runProviderTurn) {
       const provider = resolveProvider(
         isRecord(body) ? body.provider : undefined,
       )
+      // Optional per-request model override; must be a non-empty string when present.
+      const rawOverride = isRecord(body) ? body.modelOverride : undefined
+      if (rawOverride !== undefined && typeof rawOverride !== 'string')
+        throw new Error('modelOverride 必须是文本。')
+      const modelOverride = rawOverride?.trim() || undefined
+      if (modelOverride && modelOverride.length > 200)
+        throw new Error('modelOverride 过长。')
       if (pathname === '/api/discuss') {
         const input = parseDiscussionRequest(body, provider)
         invoked = true
@@ -89,7 +114,7 @@ export function createApiMiddleware(runTurn: RunTurn = runProviderTurn) {
           input.model,
           input.messages,
           runTurn,
-          { provider, signal: controller.signal },
+          { provider, signal: controller.signal, model: modelOverride },
         )
         if (!controller.signal.aborted) response.end(JSON.stringify({ text }))
       } else {
@@ -107,6 +132,7 @@ export function createApiMiddleware(runTurn: RunTurn = runProviderTurn) {
         const result = await runStage(input, runTurn, {
           signal: controller.signal,
           onEvent: streaming ? emit : undefined,
+          model: modelOverride,
         })
         if (!controller.signal.aborted) {
           if (streaming) {

@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Bot,
   Check,
+  ChevronDown,
   ClipboardCheck,
   FileText,
   Network,
@@ -133,21 +134,60 @@ function App() {
       ? 'codex'
       : 'deepseek',
   )
-  // 服务端实际生效的模型名（/api/config 只返回提供方与模型名，不含密钥）。
-  // 提供方切换只改本地偏好，模型名始终以服务端环境为准。
-  const [serverModel, setServerModel] = useState('')
+  // 服务端各提供方默认模型（/api/config，只含模型名，不含密钥）与用户覆盖。
+  // 覆盖按提供方存在 localStorage，请求时以 modelOverride 发给服务端。
+  const [providerModels, setProviderModels] = useState<Record<ProviderId, string>>({
+    deepseek: '',
+    codex: '',
+  })
+  const [modelOverride, setModelOverride] = useState<Record<ProviderId, string>>(() => ({
+    deepseek: localStorage.getItem('uom-forge-model-deepseek') || '',
+    codex: localStorage.getItem('uom-forge-model-codex') || '',
+  }))
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [availableModels, setAvailableModels] = useState<string[] | null>(null)
+  const [modelsError, setModelsError] = useState('')
+  const [modelDraft, setModelDraft] = useState('')
   useEffect(() => {
     let cancelled = false
     fetch('/api/config')
       .then((response) => (response.ok ? response.json() : null))
-      .then((config: { model?: string } | null) => {
-        if (!cancelled && config?.model) setServerModel(config.model)
+      .then((config: { options?: { value?: string; model?: string }[] } | null) => {
+        if (cancelled || !Array.isArray(config?.options)) return
+        const map: Record<ProviderId, string> = { deepseek: '', codex: '' }
+        for (const option of config!.options!)
+          if (option.value === 'deepseek' || option.value === 'codex')
+            map[option.value] = option.model || ''
+        setProviderModels(map)
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
   }, [])
+  const effectiveModel = modelOverride[provider] || providerModels[provider]
+  const openModelPicker = () => {
+    setModelDraft(modelOverride[provider] || providerModels[provider] || '')
+    setModelsError('')
+    setModelPickerOpen(true)
+    if (provider === 'deepseek' && availableModels === null)
+      fetch('/api/models')
+        .then((response) =>
+          response.ok ? response.json() : Promise.reject(new Error('HTTP ' + response.status)),
+        )
+        .then((data: { models?: string[] }) =>
+          setAvailableModels(Array.isArray(data.models) ? data.models : []),
+        )
+        .catch((failure: Error) => setModelsError(failure.message))
+  }
+  const applyModelOverride = (value: string) => {
+    const next = value.trim()
+    const override = next && next !== providerModels[provider] ? next : ''
+    setModelOverride((current) => ({ ...current, [provider]: override }))
+    if (override) localStorage.setItem('uom-forge-model-' + provider, override)
+    else localStorage.removeItem('uom-forge-model-' + provider)
+    setModelPickerOpen(false)
+  }
   const busyRef = useRef(false)
   const abortRef = useRef<AbortController | null>(null)
   const cancelled = useRef(false)
@@ -315,7 +355,12 @@ function App() {
     const response = await fetch('/api/analyze/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...body, stage, provider }),
+      body: JSON.stringify({
+        ...body,
+        stage,
+        provider,
+        modelOverride: modelOverride[provider] || undefined,
+      }),
       signal: controller.signal,
     })
     if (!response.ok) throw new Error('分析服务返回 HTTP ' + response.status)
@@ -657,6 +702,7 @@ function App() {
         body: JSON.stringify({
           document: project.document,
           provider,
+          modelOverride: modelOverride[provider] || undefined,
           model: {
             candidate: model,
             understanding: project.understanding?.narrative,
@@ -751,11 +797,69 @@ function App() {
                 {value === 'codex' ? 'Codex' : 'DeepSeek'}
               </button>
             ))}
-            {serverModel ? (
-              <span className="provider-model" title="服务端 .env 配置的模型">
-                {serverModel}
-              </span>
-            ) : null}
+            <div className="model-picker">
+              <button
+                className="provider-model"
+                title="点击切换模型"
+                disabled={busy || discussing}
+                aria-expanded={modelPickerOpen}
+                onClick={openModelPicker}
+              >
+                {effectiveModel || '模型'}
+                <ChevronDown size={12} />
+              </button>
+              {modelPickerOpen && (
+                <div className="model-popover" role="dialog" aria-label="切换模型">
+                  <strong>{provider === 'codex' ? 'Codex 模型' : 'DeepSeek 模型'}</strong>
+                  {provider === 'deepseek' && (
+                    <div className="model-list">
+                      {availableModels === null && !modelsError && (
+                        <small>正在获取模型列表…</small>
+                      )}
+                      {modelsError && (
+                        <small className="model-error">{modelsError}，可直接输入模型 id。</small>
+                      )}
+                      {availableModels?.map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={id === modelDraft ? 'active' : ''}
+                          onClick={() => setModelDraft(id)}
+                        >
+                          {id}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    value={modelDraft}
+                    onChange={(event) => setModelDraft(event.target.value)}
+                    placeholder="模型 id"
+                    aria-label="模型 id"
+                  />
+                  <div className="model-actions">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => applyModelOverride(modelDraft)}
+                    >
+                      应用
+                    </button>
+                    {modelOverride[provider] && (
+                      <button
+                        type="button"
+                        onClick={() => applyModelOverride(providerModels[provider] || '')}
+                      >
+                        恢复默认
+                      </button>
+                    )}
+                    <button type="button" onClick={() => setModelPickerOpen(false)}>
+                      关闭
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <button
             className="icon-button"

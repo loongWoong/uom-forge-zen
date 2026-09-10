@@ -26,7 +26,8 @@ export function createDeepSeekProvider(
     const url = /\/chat\/completions$/i.test(baseUrl)
       ? baseUrl
       : `${baseUrl}/chat/completions`
-    const model = env.LLM_MODEL || 'deepseek-chat'
+    // Per-call override wins over the environment default so the UI can switch models.
+    const model = options.model || env.LLM_MODEL || 'deepseek-chat'
     const timing = createTurnTiming(
       { provider: 'deepseek', model },
       prompt,
