@@ -62,6 +62,23 @@ const NAV_ITEMS = [
   { id: 'assessment', label: '支撑评估', icon: ClipboardCheck, step: '05' },
 ]
 
+const PROVIDER_OPTIONS = [
+  { value: 'codex', short: 'Codex', label: 'Codex ACP' },
+  { value: 'deepseek', short: 'DeepSeek', label: 'DeepSeek API' },
+  { value: 'private', short: '私有模型', label: '私有模型' },
+]
+const providerNameOf = (provider) => PROVIDER_OPTIONS.find((item) => item.value === provider)?.label || '推理提供方'
+
+// 服务端错误带 kind，失败提示才能对症下药：把文档闸门、模型校验与推理连接三类
+// 失败混成同一句“确认已登录 Codex”，会把用户引向完全错误的方向。
+const forgeStageError = (message, kind) => Object.assign(new Error(message), { kind: kind || 'provider' })
+
+const FAILURE_HINTS = {
+  document: '这是文档层面的闸门：Forge 从不截断正文。可按章节拆分后分批导入，或在项目 .env 里调高 UOM_MAX_DOC_CHARS（需确保推理模型上下文容得下整篇文档加输出）。',
+  model: '这是候选模型未通过服务端校验（结构、引用完整性或逐字引文）。若错误里带有模型输出预览，说明提供方没有按 JSON 输出或输出被截断，直接重试或更换提供方即可；否则请按错误里指名的元素修正模型。',
+  provider: '这是推理提供方调用失败：私有模型请确认服务在线与 PRIVATE_LLM_* 配置；Codex 请确认本机已登录且开发服务可以启动 codex-acp。',
+}
+
 const STATUS_LABELS = {
   confirmed: '已确认',
   review: '待确认',
@@ -102,6 +119,7 @@ function App() {
   const [draftMessage, setDraftMessage] = useState('')
   const [isDiscussing, setIsDiscussing] = useState(false)
   const [provider, setProvider] = useState(() => window.localStorage.getItem('uom-forge-provider') || 'deepseek')
+  const [providerInfo, setProviderInfo] = useState({ provider: '', options: [] })
   const [toast, setToast] = useState('')
   const fileInputRef = useRef(null)
 
@@ -109,7 +127,23 @@ function App() {
   const selectedActivity = activities.find((activity) => activity.id === selectedActivityId) || activities[0]
   const confirmedCount = objects.filter((object) => object.status === 'confirmed').length
   const avgCoverage = activities.length ? Math.round(activities.reduce((sum, activity) => sum + activity.coverage, 0) / activities.length) : 0
-  const llmConfigured = true
+  // Readiness comes from the server (/api/config), so the indicator cannot claim
+  // "online" when the selected provider has no endpoint configured.
+  const activeOption = providerInfo.options.find((item) => item.value === provider)
+  const llmConfigured = activeOption ? activeOption.ready : true
+  const activeProviderLabel = activeOption?.label || providerNameOf(provider)
+
+  useEffect(() => {
+    fetch('/api/config')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((config) => {
+        if (!config) return
+        setProviderInfo(config)
+        // The server default only wins when the user has never chosen explicitly.
+        if (!window.localStorage.getItem('uom-forge-provider') && config.provider) setProvider(config.provider)
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     const stored = window.localStorage.getItem('uom-forge-project-v3')
@@ -191,10 +225,13 @@ function App() {
     const requestBody = { ...body, stage, provider }
     if (stage !== 'narrate') requestBody.document = document
     const response = await fetch('/api/analyze/stream', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requestBody) })
-    if (!response.ok) throw new Error(`分析服务调用失败（HTTP ${response.status}）`)
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
+      throw forgeStageError(`分析服务调用失败（HTTP ${response.status}）${payload.error ? `：${payload.error}` : ''}`, payload.kind)
+    }
     let payload
     let streamedOutput = ''
-    const providerName = provider === 'deepseek' ? 'DeepSeek API' : 'Codex ACP'
+    const providerName = providerNameOf(provider)
     await readSse(response, (event) => {
       if (event.type === 'phase') setMessages((current) => current.map((message) => message.id === messageId ? { ...message, progress: true, content: `${label}\n\n${event.text}` } : message))
       if (event.type === 'delta') {
@@ -203,7 +240,7 @@ function App() {
         setMessages((current) => current.map((message) => message.id === messageId ? { ...message, progress: true, content: `${label}\n\n${providerName} 正在输出` } : message))
       }
       if (event.type === 'result') payload = event.result
-      if (event.type === 'error') throw new Error(event.error || '分析服务调用失败')
+      if (event.type === 'error') throw forgeStageError(event.error || '分析服务调用失败', event.kind)
     })
     if (!payload) throw new Error(`${label}未返回结果`)
     setMessages((current) => current.map((message) => message.id === messageId ? { ...message, progress: false } : message))
@@ -252,12 +289,14 @@ function App() {
       setActivities(viewActivities); setSelectedActivityId(viewActivities[0]?.id || null)
       setIsAnalyzing(false); setActiveView('assessment')
       setQuestionsSubmitted(Boolean(fromFeedback && feedbackOverride))
-      setMessages((current) => [...current, { role: 'assistant', content: `${assessed.assessment?.summary || result.summary || '本轮建模完成。'}\n\n已完成业务理解、候选建模、模型自述和业务过程支撑评估。请查看结果并反馈，下一轮将从建模阶段继续。` }])
+      // 服务端自动恢复（提取/修复 JSON）必须告知用户，不能把修复结果当成完整结果展示。
+      const notices = modelResult?.notices?.length ? `\n\n⚠️ ${modelResult.notices.join(' ')}` : ''
+      setMessages((current) => [...current, { role: 'assistant', content: `${assessed.assessment?.summary || result.summary || '本轮建模完成。'}\n\n已完成业务理解、候选建模、模型自述和业务过程支撑评估。请查看结果并反馈，下一轮将从建模阶段继续。${notices}` }])
       setToast('本轮建模与评估完成')
     } catch (error) {
       console.error('Codex ACP modeling failed', error); setIsAnalyzing(false); setRunningStage(null)
       if (feedbackOverride) setQuestionsSubmitted(false)
-      setMessages((current) => [...current.map((message) => message.progress ? { ...message, progress: false } : message), { role: 'assistant', content: `建模失败：${error.message}\n\n如果这是 ACP 连接错误，再确认本机已登录 Codex 且开发服务可以启动 codex-acp；如果是模型或证据校验错误，请根据具体信息修正文档或模型。` }]); setToast('建模失败')
+      setMessages((current) => [...current.map((message) => message.progress ? { ...message, progress: false } : message), { role: 'assistant', content: `建模失败：${error.message}\n\n${FAILURE_HINTS[error.kind] || FAILURE_HINTS.provider}` }]); setToast('建模失败')
     }
   }
 
@@ -329,9 +368,9 @@ function App() {
         <div className="topbar-actions">
           <div className={`llm-indicator ${llmConfigured ? 'online' : ''}`} title="建模与讨论请求使用当前选择的推理提供方">
             <span className="state-dot" />
-            <span>{provider === 'codex' ? 'Codex ACP' : 'DeepSeek API'}</span>
+            <span>{activeProviderLabel}</span>
           </div>
-          <div className="provider-switch" aria-label="选择推理提供方"><button type="button" className={provider === 'codex' ? 'active' : ''} onClick={() => selectProvider('codex')}>Codex</button><button type="button" className={provider === 'deepseek' ? 'active' : ''} onClick={() => selectProvider('deepseek')}>DeepSeek</button></div>
+          <div className="provider-switch" aria-label="选择推理提供方">{PROVIDER_OPTIONS.map((option) => { const state = providerInfo.options.find((item) => item.value === option.value); const ready = state ? state.ready : true; return <button key={option.value} type="button" className={`${provider === option.value ? 'active' : ''} ${ready ? '' : 'unavailable'}`} title={state ? `${state.label}${state.model ? ` · ${state.model}` : ''}${ready ? '' : ' · 未配置'}` : option.label} onClick={() => selectProvider(option.value)}>{option.short}</button> })}</div>
           <button className="icon-button" type="button" title="保存项目" onClick={persistProject}><Save size={17} /></button>
           <button className="icon-button" type="button" title="项目设置"><Settings2 size={17} /></button>
           <div className="avatar">CH</div>
@@ -580,7 +619,7 @@ function GraphCanvas({ objects, relations, selectedObjectId, selectedRelationId,
   const height = Math.max(470, padding * 2 + rows * nodeHeight + (rows - 1) * gapY)
   const positions = new Map(objects.map((object, index) => [object.id, { x: padding + (index % columns) * (nodeWidth + gapX), y: padding + Math.floor(index / columns) * (nodeHeight + gapY) }]))
   const resolveId = (value) => objects.some((object) => object.id === value) ? value : objects.find((object) => object.name === value)?.id
-  const providerName = provider === 'deepseek' ? 'DeepSeek API' : 'Codex ACP'
+  const providerName = providerNameOf(provider)
   return <div className="graph-canvas"><div className="graph-stage" style={{ width, height }}>
     <svg className="graph-edges" width={width} height={height} aria-hidden="true"><defs><marker id="graph-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="currentColor" /></marker></defs>{relations.map((relation, index) => { const relationId = relation.id || `relation-${index + 1}`; const from = positions.get(resolveId(relation.fromId || relation.from)); const to = positions.get(resolveId(relation.toId || relation.to)); if (!from || !to) return null; const x1 = from.x + nodeWidth / 2; const y1 = from.y + nodeHeight / 2; const x2 = to.x + nodeWidth / 2; const y2 = to.y + nodeHeight / 2; const active = selectedRelationId === relationId; return <g className={`graph-edge ${active ? 'active' : ''}`} key={relationId} onClick={() => onSelectRelation(relationId)} role="button" tabIndex="0" onKeyDown={(event) => event.key === 'Enter' && onSelectRelation(relationId)}><line className="graph-edge-hit" x1={x1} y1={y1} x2={x2} y2={y2} /><line className="graph-edge-line" x1={x1} y1={y1} x2={x2} y2={y2} markerEnd="url(#graph-arrow)" /><text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 7}>{relation.label || '关联'}</text></g> })}</svg>
     {objects.map((object) => { const position = positions.get(object.id); return <div className="graph-node-position" key={object.id} style={{ left: position.x, top: position.y }}><GraphNode object={object} active={selectedObjectId === object.id} onClick={() => onSelectObject(object.id)} /></div> })}
@@ -616,7 +655,7 @@ function ActivitiesView({ activities, selectedActivityId, onSelectActivity }) {
 
 function NarrativeView({ narrative, liveOutput, isLive, provider }) {
   const content = narrative || liveOutput
-  const providerName = provider === 'deepseek' ? 'DeepSeek API' : 'Codex ACP'
+  const providerName = providerNameOf(provider)
   if (!content && !isLive) return <section className="narrative-view"><div className="empty-state panel-surface">候选模型生成后，这里会显示仅基于模型的自然语言复述。</div></section>
   return <section className="narrative-view"><div className="narrative-card panel-surface"><div className="panel-toolbar"><div><div className="panel-title">候选模型自述</div><div className="panel-subtitle">仅依据候选模型生成，不读取业务文档和第一阶段业务理解</div></div><span className={`narrative-status ${isLive ? 'live' : ''}`}>{isLive ? `${providerName} 正在复述` : '可供审阅'}</span></div><div className="narrative-body">{content ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown> : <span className="narrative-placeholder">正在等待模型自述……</span>}{isLive && <span className="typing-indicator" aria-label="正在输出"><i /><i /><i /></span>}</div></div></section>
 }
@@ -636,7 +675,7 @@ function MetricCard({ icon: Icon, label, value, tone }) {
 
 function LiveStageOutput({ output, isLive, provider }) {
   if (!isLive && !output) return null
-  const providerName = provider === 'deepseek' ? 'DeepSeek API' : 'Codex ACP'
+  const providerName = providerNameOf(provider)
   return <div className="live-stage-output panel-surface"><div className="live-stage-heading"><span className={`live-dot ${isLive ? 'active' : ''}`} /><strong>{isLive ? `${providerName} 流式输出` : '本阶段输出记录'}</strong><small>{isLive ? '正在接收' : '已完成'}</small></div><pre>{output || `正在等待 ${providerName} 输出……`}</pre></div>
 }
 

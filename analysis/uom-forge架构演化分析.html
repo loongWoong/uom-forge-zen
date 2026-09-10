@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UOM Forge 架构演化分析报告</title>
+<style>
+:root{
+  --bg:#f3f5f4; --surface:#ffffff; --surface-subtle:#f7f8f7;
+  --ink:#17201c; --muted:#68736d; --line:#dfe4e1; --line-strong:#cbd3ce;
+  --green:#156b4a; --green-dark:#0e5238; --green-soft:#e7f2ec;
+  --red:#b83b35; --red-soft:#f8e9e7; --amber:#9a6418; --amber-soft:#f8eedc;
+  --blue:#356a91; --blue-soft:#e7eff5;
+  --code-bg:#0f1a16; --code-ink:#d9e6df;
+  --mono:ui-monospace,SFMono-Regular,"Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--ink); background:var(--bg);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;line-height:1.7;font-size:15px}
+a{color:var(--green);text-decoration:none}
+a:hover{text-decoration:underline}
+.layout{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:100vh}
+/* ---------- 侧边 TOC ---------- */
+.toc{position:sticky;top:0;height:100vh;overflow-y:auto;background:#17231e;color:#edf4f0;padding:22px 16px;border-right:1px solid #25362e}
+.toc .brand{display:flex;align-items:center;gap:11px;padding:0 6px 22px}
+.toc .brand-mark{display:grid;place-items:center;width:38px;height:38px;background:#e7f2ec;color:var(--green-dark);font-weight:800;border-radius:8px;font-size:12px;letter-spacing:.5px}
+.toc .brand strong{display:block;font-size:14px}
+.toc .brand span{display:block;margin-top:2px;color:#97a89f;font-size:11px}
+.toc nav{display:grid;gap:2px}
+.toc a{display:block;padding:7px 10px;border-radius:6px;color:#aebdb5;font-size:13px;border-left:2px solid transparent;transition:.15s}
+.toc a:hover{color:#fff;background:rgba(255,255,255,.06);text-decoration:none}
+.toc a.active{color:#fff;background:#274337;border-left-color:#4fbf8d}
+.toc a.l2{padding-left:24px;font-size:12.5px;color:#8fa29a}
+.toc .toc-label{padding:14px 10px 6px;font-size:10.5px;letter-spacing:1.5px;color:#6f8379;text-transform:uppercase}
+main{min-width:0}
+/* ---------- Hero ---------- */
+.hero{background:linear-gradient(135deg,#0e5238 0%,#14573f 45%,#1d3b30 100%);color:#edf4f0;padding:56px 0 44px}
+.hero .wrap{max-width:940px;margin:0 auto;padding:0 32px}
+.hero .kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;letter-spacing:2px;color:#9dcdb6;text-transform:uppercase;font-weight:600}
+.hero .kicker::before{content:"";width:26px;height:2px;background:#4fbf8d}
+.hero h1{margin:14px 0 10px;font-size:32px;line-height:1.25}
+.hero p{margin:0;color:#b9c9c1;max-width:74ch;font-size:15px}
+.hero .meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+.hero .chip{display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);padding:6px 12px;border-radius:999px;font-size:12px;color:#d8e5de}
+.hero .chip b{color:#fff;font-weight:600}
+.hero .conclusion{margin-top:24px;padding:16px 18px;border-radius:10px;background:rgba(255,255,255,.07);border-left:3px solid #4fbf8d;font-size:14px;color:#cfe0d7}
+/* ---------- 正文 ---------- */
+.content{max-width:940px;margin:0 auto;padding:48px 32px 90px}
+section{margin-top:52px}
+section:first-child{margin-top:0}
+h2{font-size:24px;margin:0 0 6px;display:flex;align-items:center;gap:12px}
+h2 .sec-no{font-size:13px;font-weight:700;color:#fff;background:var(--green);width:30px;height:30px;border-radius:8px;display:grid;place-items:center;flex:none}
+h3{font-size:17.5px;margin:34px 0 10px;color:#14352a}
+h4{font-size:15px;margin:22px 0 8px;color:#0e5238}
+p{margin:10px 0;color:#2c3731}
+.lead{border-left:3px solid var(--green);padding:10px 16px;background:var(--green-soft);border-radius:0 8px 8px 0;font-size:14.5px;color:#173b2d;margin:14px 0}
+/* ---------- 代码框 ---------- */
+.codebox{margin:16px 0;border-radius:10px;overflow:hidden;border:1px solid #1c2d25;background:var(--code-bg);box-shadow:0 6px 18px rgba(20,40,32,.12)}
+.codebox .bar{display:flex;align-items:center;gap:8px;padding:8px 14px;background:#14221c;border-bottom:1px solid #22352c;color:#7f9a8e;font-size:11.5px}
+.codebox .bar .dot{width:9px;height:9px;border-radius:50%}
+.codebox .bar .dot:nth-child(1){background:#f0635c}.codebox .bar .dot:nth-child(2){background:#e2b25c}.codebox .bar .dot:nth-child(3){background:#5fc98a}
+.codebox .bar .fname{margin-left:6px;font-family:var(--mono);color:#9fb6ab}
+.codebox pre{margin:0;padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.65;color:var(--code-ink)}
+.codebox pre code{font-family:inherit;background:none;color:inherit;padding:0}
+.tok-c{color:#6d8a7e;font-style:italic}
+.tok-s{color:#e6c97a}
+.tok-k{color:#7fd6a8;font-weight:600}
+.tok-n{color:#86c5e8}
+.tok-f{color:#d9a7f0}
+.tok-p{color:#c88fd8}
+/* ---------- 表格 ---------- */
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;background:var(--surface);border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(28,41,34,.06)}
+th{background:#eef3f0;color:#24402f;text-align:left;padding:10px 14px;font-size:12.5px;letter-spacing:.3px;border-bottom:1px solid var(--line)}
+td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td code,li code,p code{font-family:var(--mono);font-size:12px;background:#e9efec;border:1px solid #dbe2de;border-radius:5px;padding:1.5px 6px;color:#0e5238}
+/* ---------- 卡片 / Callout ---------- */
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin:16px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;box-shadow:0 2px 10px rgba(28,41,34,.05)}
+.card h4{margin:0 0 8px}
+.card p{margin:6px 0;font-size:13.5px}
+.card .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.5px;padding:3px 9px;border-radius:999px;margin-bottom:8px}
+.callout{border-radius:10px;padding:14px 18px;margin:16px 0;font-size:14px;border:1px solid}
+.callout.info{background:var(--blue-soft);border-color:#c9dbe8;color:#234a66}
+.callout.warn{background:var(--amber-soft);border-color:#e8d9b8;color:#6d4712}
+.callout.ok{background:var(--green-soft);border-color:#c4e0d1;color:#14543a}
+.callout.red{background:var(--red-soft);border-color:#ecc9c6;color:#7c2b27}
+.callout .t{font-weight:700;display:block;margin-bottom:4px}
+/* ---------- 分层图 ---------- */
+.layers{display:grid;gap:0;margin:20px 0;border:1px solid var(--line-strong);border-radius:14px;overflow:hidden;background:var(--surface)}
+.layer{padding:16px 20px;border-top:1px solid var(--line)}
+.layer:first-child{border-top:none}
+.layer .lname{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px}
+.layer .lname .badge{font-size:10.5px;font-weight:800;letter-spacing:1px;padding:3px 8px;border-radius:6px}
+.layer .ldesc{font-size:13px;color:var(--muted);margin-top:4px}
+.layer .lfiles{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.layer .lfiles span{font-family:var(--mono);font-size:11.5px;background:#f0f3f1;border:1px solid var(--line);border-radius:6px;padding:3px 8px;color:#33453c}
+.l-base{background:#e7f2ec}.l-domain{background:#fff}.l-agent{background:#e7eff5}
+.badge-base{background:#c4e0d1;color:#14543a}.badge-domain{background:#e8d9b8;color:#6d4712}.badge-agent{background:#c9dbe8;color:#234a66}
+/* ---------- 流程图 ---------- */
+.flow{display:grid;gap:10px;margin:18px 0}
+.flow .step{display:grid;grid-template-columns:46px 1fr auto;gap:14px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.flow .idx{width:46px;height:46px;border-radius:11px;display:grid;place-items:center;font-weight:800;font-size:16px;color:#fff}
+.flow .step .st{font-weight:700;font-size:14px}
+.flow .step .sd{font-size:12.8px;color:var(--muted)}
+.flow .side{font-family:var(--mono);font-size:11px;color:#3f5249;background:#eef2ef;border-radius:7px;padding:4px 9px;white-space:nowrap}
+.flow .join{text-align:center;color:var(--green);font-weight:700;font-size:13px;letter-spacing:3px}
+/* ---------- 时间线 ---------- */
+.master-tl{position:relative;margin:24px 0;padding-left:34px}
+.master-tl::before{content:"";position:absolute;left:13px;top:8px;bottom:8px;width:3px;background:linear-gradient(#156b4a,#356a91)}
+.master-tl .mt{position:relative;margin:0 0 14px}
+.master-tl .mt .dot{position:absolute;left:-32px;top:8px;width:15px;height:15px;border-radius:50%;background:#fff;border:3px solid var(--green)}
+.master-tl .mt .ph{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.master-tl .mt .ph .badge{font-size:11px;font-weight:800;letter-spacing:1px;padding:3px 10px;border-radius:6px}
+.master-tl .mt .ph .date{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.master-tl .mt .ph .commit{font-family:var(--mono);font-size:11.5px;color:#4a5c53;background:#eef2ef;border-radius:6px;padding:2px 8px}
+.master-tl .mt .ph .title{font-weight:700;font-size:15px}
+.master-tl .mt .desc{font-size:13px;color:#3a4a42;margin-top:3px}
+.b-a{background:#e7f2ec;color:#14543a}.b-b{background:#dcefe4;color:#14543a}.b-c{background:#f8eedc;color:#6d4712}
+.b-d{background:#f3e8c9;color:#6d4712}.b-e{background:#e7eff5;color:#234a66}.b-f{background:#e8d9b8;color:#6d4712}
+.b-g{background:#c9dbe8;color:#234a66}.b-h{background:#d9c9e8;color:#4a2a66}
+/* ---------- 巧思可折叠卡 ---------- */
+.clever{display:grid;gap:14px;margin:14px 0}
+.cv{background:var(--surface);border:1px solid var(--line);border-radius:13px;overflow:hidden;box-shadow:0 2px 10px rgba(28,41,34,.05)}
+.cv .cv-h{display:grid;grid-template-columns:44px 1fr auto;gap:14px;align-items:center;padding:13px 18px;background:#fafbfa;border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
+.cv .cv-n{width:44px;height:44px;border-radius:11px;display:grid;place-items:center;font-weight:800;font-size:15px;color:#fff}
+.cv .cv-t{font-weight:800;font-size:14.5px;line-height:1.4}
+.cv .cv-f{font-family:var(--mono);font-size:11px;color:var(--muted);background:#eef2ef;border-radius:6px;padding:2px 8px;white-space:nowrap}
+.cv .cv-b{display:none;padding:6px 18px 16px}
+.cv.open .cv-b{display:block}
+.cv .cv-b p{font-size:13.6px;color:#33423b}
+.cv .cv-b .why{margin-top:10px;padding:10px 14px;border-radius:9px;background:var(--green-soft);border-left:3px solid var(--green);font-size:13px;color:#173b2d}
+.cv .toggle{color:var(--muted);font-size:18px;transition:.2s}
+.cv.open .toggle{transform:rotate(45deg)}
+/* ---------- 双栏 / 列表 / 响应式 ---------- */
+.dual{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}
+.check li{margin:6px 0;list-style:none;padding-left:28px;position:relative}
+.check li::before{content:"✓";position:absolute;left:2px;top:0;color:var(--green);font-weight:800}
+@media(max-width:860px){
+  .layout{grid-template-columns:1fr}
+  .toc{display:none}
+  .hero h1{font-size:25px}
+  .dual{grid-template-columns:1fr}
+  .cv .cv-h{grid-template-columns:40px 1fr}
+  .cv .cv-f{display:none}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="toc">
+    <div class="brand">
+      <div class="brand-mark">FORGE</div>
+      <div><strong>架构演化分析</strong><span>报告二 · 架构怎么来的</span></div>
+    </div>
+    <nav id="tocNav"></nav>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <div class="wrap">
+        <div class="kicker">Analysis · 报告二 / 架构演化</div>
+        <h1>UOM Forge 架构演化分析</h1>
+        <p>依据全量 3 个提交（2026-09-08 22:15 → 09-09 22:47，31 h 32 min）还原一次压缩在一天半内的范式切换：单体演示壳如何变成分层可信系统。</p>
+        <div class="meta"><span class="chip">提交数 <b>3（无分支/stash）</b></span><span class="chip">跨度 <b>31 h 32 min</b></span><span class="chip">方法 <b>git show + 旧版全文比对</b></span><span class="chip">日期 <b>2026-09-10</b></span></div>
+        <div class="conclusion"><b>结论先行：</b>三个提交 = 宣言期 → 演示壳期 → 证据转向期。决定性重构的主要动作不是新增功能，而是移动职责：形状上移为契约、机制下沉为守护、领域词汇从代码物理删除。守护层不是先验设计，而是被真实故障（转述引文）塑造出来的。</div>
+      </div>
+    </header>
+
+    <div class="content">
+<section id="s1"><h2><span class="sec-no">1</span>演化时间线总览</h2><div class="lead">三个提交 = 三个阶段，总跨度 <b>31 小时 32 分钟</b>。真正的架构诞生在第 3 个提交，它同时完成三件事：物理删除全部演示数据、从零建立服务端守护层与共享契约层、把项目定义从「产出已验证的 UOM/OAG 模型」改写为「产出 Provider 中立的候选模型」。</div><div class="master-tl"><div class="mt"><div class="dot" style="border-color:var(--blue)"></div><div class="ph"><span class="badge b-e">A 宣言期</span><span class="date">2026-09-08 22:15</span><span class="commit">6281ba3</span><span class="title">README only · 方法论宣言</span></div><div class="desc">1 个文件。写下「先概念后过程」的方法论内核（沿用至今），同时写下两句后来被自己推翻的话：LLM-assisted、validated UOM/OAG domain models。</div></div><div class="mt"><div class="dot" style="border-color:var(--amber)"></div><div class="ph"><span class="badge b-c">B 演示壳期</span><span class="date">2026-09-08 22:59 (+44 min)</span><span class="commit">9c2b7e2</span><span class="title">纯前端原型 · 假分析</span></div><div class="desc">7 文件 / +1,824 行。538 行 main.jsx 承载全部逻辑，硬编码电网高压接入领域数据，setTimeout 假分析与关键词假聊天。vite.config.js 仅 10 行，无任何服务端代码。</div></div><div class="mt"><div class="dot"></div><div class="ph"><span class="badge b-a">C 证据转向期</span><span class="date">2026-09-09 22:47 (+23 h 48 min)</span><span class="commit">71c1887</span><span class="title">范式切换 + 重命名级重构</span></div><div class="desc">15 文件 / +4,984 −648。新增 8 个文件（契约层 + 守护层 + 集成层 + 测试 + 部署 + 子模块），main.jsx 改写 635 行（+373/−262），README 首行重写。</div></div></div><table><thead><tr><th>提交体量对比</th><th>阶段 B</th><th>阶段 C</th></tr></thead><tbody><tr><td>文件数（去锁文件）</td><td>7</td><td>15</td></tr><tr><td>净变化</td><td>+1,824（全新）</td><td>+4,984 / −648</td></tr><tr><td>src/main.jsx</td><td>538 行（新建）</td><td>649 行（+373 / −262，改写近半）</td></tr><tr><td>vite.config.js</td><td>10 行</td><td>92 行</td></tr><tr><td>前端 useState 数量</td><td>13</td><td>28</td></tr><tr><td>依赖数 / 测试</td><td>5 依赖、无 test 脚本</td><td>12 依赖 + node --test</td></tr></tbody></table></section><section id="s2"><h2><span class="sec-no">2</span>三个阶段详解</h2><h3>阶段 A · 宣言期（6281ba3）</h3><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">README.md @ 6281ba3</span></div><pre><code data-lang="javascript"># UOM Forge
+
+LLM-assisted domain modeling workbench for producing validated UOM/OAG domain models.
+
+The project will encode a repeatable modeling methodology that helps domain experts
+identify stable concepts, business objects, facts, relations, constraints, and
+capabilities before describing business processes.</code></pre></div><table><thead><tr><th>初始断言</th><th>问题</th><th>后来的命运</th></tr></thead><tbody><tr><td>「producing <b>validated</b> ... models」</td><td>预设 Forge 自身拥有验收资格</td><td>改为 <b>candidate</b> + 人工审阅 + 导出后才谈运行时</td></tr><tr><td>「<b>UOM/OAG</b> domain models」</td><td>把产物绑定到具体下游运行时</td><td>契约层注释正面否定：no dependency on UOM/OAG runtime schemas</td></tr><tr><td>「before describing business processes」</td><td>—— 这条是对的</td><td>成为 modelingPrompt 的显式指令（不要把过程步骤机械地建成对象）</td></tr></tbody></table><p class="lead">阶段 A 的意义：方法论先于实现被写下来，后续代码是对它的逐步兑现与对首句定位的自我修正。</p><h3>阶段 B · 演示壳期（9c2b7e2）</h3><p>全部「领域」是硬编码在源码里的电网高压接入业务（旧版 main.jsx L39-166，约 130 行）：</p><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">src/main.jsx @ 9c2b7e2（已删除的旧代码）</span></div><pre><code data-lang="javascript">const DEFAULT_DOCUMENT = { name: '高压接入方案业务规则说明.md', content: [...].join('\n') }
+const INITIAL_OBJECTS = [
+  { id: 'demand', name: '用电需求', ..., fields: ['需求类型', '供电电压', '合同容量', '用户重要等级'] },
+  { id: 'supply-point', name: '电源点', ... }, { id: 'feeder', name: '馈线', ... },
+  { id: 'substation', name: '变电站', ... }, { id: 'plan', name: '供电方案', ... },
+]
+const INITIAL_RELATIONS = [
+  { from: '用电需求', label: '筛选', to: '电源点' },      // 名称三元组，无 id、无校验
+  { from: '电源点', label: '关联', to: '馈线' }, ...
+]
+const INITIAL_ACTIVITIES = [
+  { id: 'new-install', ..., coverage: 86, status: 'supported',
+    elements: ['用电需求', '电源点', '馈线', '变电站', '容量校核'] },   // 覆盖率是字面量
+  { id: 'capacity-upgrade', ..., coverage: 68, ... }, ...
+]</code></pre></div><p>三个「假」的机制：</p><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">旧版 runAnalysis / sendMessage（假分析与假聊天）</span></div><pre><code data-lang="javascript">const runAnalysis = () =&gt; {
+  setIsAnalyzing(true)
+  setMessages((c) =&gt; [...c, { role: 'assistant',
+    content: '正在对文档进行分段理解，并将候选概念映射到模型元素……' }])
+  window.setTimeout(() =&gt; { setIsAnalyzing(false); setActiveView('model')
+    setMessages((c) =&gt; [...c, { role: 'assistant',
+      content: '首轮建模完成。建议先确认"用电需求"和"电源点"的边界……' }])
+  }, 1050)                                    // ← 假分析：定时器 + 固定话术
+}
+
+window.setTimeout(() =&gt; {
+  const response = content.includes('设备')          // ← 假讨论：关键词分支
+    ? '文档确实提到设备投运年限、缺陷和历史停电，但目前它们只作为评分依据出现……'
+    : '我会把这条意见记录为模型调整建议……'
+  setMessages((c) =&gt; [...c, { role: 'assistant', content: response }])
+}, 620)
+
+// LLM 的「配置状态」= 前端环境变量存在性判断
+const llmConfigured = Boolean(import.meta.env.VITE_LLM_API_URL &amp;&amp; import.meta.env.VITE_LLM_MODEL)</code></pre></div><div class="callout warn"><span class="t">阶段 B 的三个结构性特征（决定了 C 必须重构什么）</span>① <b>展示层拥有全部真相</b>：模型/关系/活动/覆盖率全是前端常量，INITIAL_RELATIONS 与 INITIAL_ACTIVITIES 甚至没有 setter（不可变）。② <b>无契约</b>：对象形状就是字面量形状（fields: string[]），关系是名称三元组，覆盖率是字面量。③ <b>无校验</b>：不存在「这个模型合法吗」这个概念。</div><p>当时的 README 对这种状态是坦白的：<i>「The built-in demo provider makes the workflow usable before an LLM gateway is added.」</i> —— 演示优先，真实性后置。</p></section><section id="s3"><h2><span class="sec-no">3</span>决定性重构深挖：71c1887</h2><p>一次提交引入 8 个新文件、删除演示数据、改写 README。主要动作<b>不是新增功能，而是移动职责</b>。</p><h3>文件迁移与职责变化对照表</h3><table><thead><tr><th>演化前（B）</th><th>演化后（C）</th><th>职责变化方向</th></tr></thead><tbody><tr><td>—</td><td><code>shared/model-contract.js</code> +51</td><td><b>上移 · 抽象化</b>：模型形状从「前端字面量的形状」升格为前后端共用 JSON Schema</td></tr><tr><td>—</td><td><code>server/modeling.js</code> +261</td><td><b>下沉 · 机制化</b>：文档闸门、四阶段提示词、规范化器、八级校验；前端不再拥有真相</td></tr><tr><td>—</td><td><code>server/codex-acp.js</code> +178</td><td>新增集成层：双 provider 统一接口</td></tr><tr><td>—</td><td><code>server/modeling.test.js</code> +33</td><td>新增：校验管道获得回归保护（3 例全针对证据可信性）</td></tr><tr><td><code>vite.config.js</code> 10 行</td><td>同路径 92 行</td><td><b>升格</b>：从「构建配置」变成「传输层 / API 服务器」</td></tr><tr><td><code>src/main.jsx</code> 538 行</td><td>同路径 649 行</td><td><b>降格</b>：从「演示数据宿主 + 假分析」降为「证据呈现 + 人工确认壳」</td></tr><tr><td>INITIAL_* 三组常量 ≈130 行电网领域数据</td><td><code>= []</code> + 注释</td><td><b>移出代码</b>：领域词汇物理删除，只能在运行时由文档提供</td></tr><tr><td>runAnalysis = setTimeout(1050)</td><td>runStage → /api/analyze/stream</td><td>假延时 → 真推理 + SSE 阶段事件</td></tr><tr><td>sendMessage = setTimeout(620) + includes('设备')</td><td>discussionPrompt + /api/discuss</td><td>模板回复 → 真讨论，并新增约束「此轮仅讨论，不声称修改了模型」</td></tr><tr><td>关系 <code>{from:'用电需求',label,to}</code></td><td><code>{id, from:objId, to:objId, evidence}</code></td><td>名称标签 → <b>id 引用 + 端点存在性校验</b></td></tr><tr><td><code>activities[].coverage = 86</code> 字面量</td><td><code>activityCoverage(requirements)</code></td><td><b>状态由事实推导</b>：不再直接存百分比</td></tr><tr><td>localStorage 'uom-forge-project' 无版本</td><td>'uom-forge-project-v3' + version 门控</td><td>草稿获得版本契约与迁移闸门</td></tr><tr><td><code>llmConfigured = Boolean(VITE_*)</code></td><td>常量 true；凭据改服务端 process.env</td><td>凭据从浏览器可见 → 服务端独占（代价见 §5）</td></tr><tr><td>4 视图（文档/模型/活动/评估）</td><td>5 视图（新增业务理解、模型自述）</td><td>方法论阶段显式化为 UI 阶段</td></tr><tr><td>—</td><td>.gitmodules + qq-doc-clone</td><td>证据阅读能力外置为独立子项目</td></tr><tr><td>—</td><td>deploy/uom-forge.service</td><td>获得部署形态（systemd + EnvironmentFile）</td></tr></tbody></table><h3>三条分层本质</h3><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">上移 = 抽象化：shared/model-contract.js:14</span></div><pre><code data-lang="javascript">// Provider-neutral modeling output; no dependency on UOM/OAG runtime schemas.</code></pre></div><p>这行注释正是对阶段 A README 首句的正面否定 —— 契约<b>故意不认识</b> UOM/OAG。</p><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">下沉 = 机制化：server/codex-acp.js:12-17（阶段 C 新增）</span></div><pre><code data-lang="javascript">validateDocument(document)
+const text = await runProviderTurn(modelingPrompt(document, currentModel, instruction), options)
+const model = hydrateEvidence(normalizeModel(parseModel(text)), document)
+const validation = validateModel(model, document)</code></pre></div><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">领域化 = 从代码里搬走：src/main.jsx:51-53-54</span></div><pre><code data-lang="javascript">/* Demo candidates are intentionally not loaded. Analysis must come from the
+   current evidence document through the ACP provider. */
+const INITIAL_OBJECTS = []</code></pre></div><div class="callout ok"><span class="t">注册方式的泛化：从「改代码」到「给文档」</span>阶段 B 新增一个业务领域 = 改写 INITIAL_OBJECTS / RELATIONS / ACTIVITIES 三组常量并为其编造演示数据；阶段 C 之后<b>代码不再携带任何领域词汇</b>，机制（如何建模、如何校验）与词汇（哪个行业）彻底分离，新增领域的成本从「改代码 + 编演示数据」降为「上传一份文档」。</div><h3>README 的概念边界移动（同一提交内）</h3><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">README.md diff @ 71c1887</span></div><pre><code data-lang="javascript">-LLM-assisted domain modeling workbench for producing validated UOM/OAG domain models.
++Evidence-first domain modeling workbench. Forge produces a provider-neutral candidate
++model from business documents and lets a domain expert review the evidence before it
++is exported to a runtime-specific model.
+
+-The built-in demo provider makes the workflow usable before an LLM gateway is added.
++If the ACP call fails, the UI reports the error and keeps the previous draft;
++it never silently falls back to fixed demo data.</code></pre></div><p>三个语义变化同时发生：<b>证据优先</b>取代 LLM 辅助；<b>候选</b>取代已验证；<b>运行时专属模型成为导出后的下游产物</b>，而非 Forge 的产物。</p></section><section id="s4"><h2><span class="sec-no">4</span>需求反向驱动基础层的证据</h2><p>阶段 C 之后，基础层被真实需求塑形的四处位置，都能在代码里指认。</p><h3>最强证据：真实 LLM 故障 → 证据修复机制</h3><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">server/modeling.js:132-134（注释即故障记录）</span></div><pre><code data-lang="javascript">// ACP output occasionally pairs a valid block id with a paraphrase rather
+// than a verbatim quote. Keep only grounded citations, and repair the block
+// id when the same quote is present elsewhere in the document.</code></pre></div><div class="codebox"><div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="fname">server/modeling.test.js:24-31（故障 → 能力 → 回归 的闭环）</span></div><pre><code data-lang="javascript">test('drops provider citations that are not verbatim evidence', () =&gt; {
+  const model = hydrateEvidence(normalizeModel({
+    actions: [{ id: 'perform', name: '完成操作', targets: [], inputs: [],
+                evidence: [{ blockId: 'b1', quote: '主体完成了操作' }] }],
+  }), document)
+  assert.deepEqual(model.actions[0].evidence, [])
+  assert.doesNotThrow(() =&gt; validateModel(model, document))
+})</code></pre></div><div class="callout ok"><span class="t">为什么这是最有价值的演化证据</span>原文是「主体完成操作并产生结果」，测试里的引文是「主体完成了操作」——一个真实的转述。<b>故障观察 → 基础层新增能力 → 测试固化</b>三步齐全，说明守护层不是先验的架构美学，而是被真实故障塑造出来的。</div><h3>另外三处</h3><table><thead><tr><th>需求</th><th>基础层的响应</th><th>证据位置</th></tr></thead><tbody><tr><td>DeepSeek 会先吐长串思考流，UI 会像卡死</td><td>delta 事件增加 reasoning 标志，把「给 UI 的进度」与「给 JSON 解析器的内容」分成两条流</td><td>codex-acp.js:92-97</td></tr><tr><td>方法论要求「自述必须与证据独立」</td><td>传输协议多出一条裁剪规则：narrate 阶段不带 document</td><td>main.jsx:192 + modeling.js:175-184</td></tr><tr><td>证据阅读需保留原始排版与定位能力</td><td>不复制编辑器实现，改为子模块 + 嵌入契约（embedded / readOnly / initialTitle / initialContent）</td><td>main.jsx:439-444 + README「Forge 不复制其实现」</td></tr><tr><td>跨阶段引用需可校验</td><td>ASSESSMENT_SCHEMA 强制 processId 引用理解阶段 id、coveredElements 引用模型 id</td><td>modeling.js:211-220, 242</td></tr></tbody></table></section><section id="s5"><h2><span class="sec-no">5</span>演化规律总结</h2><h3>维度对比表</h3><table><thead><tr><th>维度</th><th>演化前（阶段 B）</th><th>演化后（阶段 C）</th></tr></thead><tbody><tr><td>领域内容来源</td><td>硬编码电网演示常量（≈130 行）</td><td>运行时上传文档的证据块，代码零领域词汇</td></tr><tr><td>分析真实性</td><td>setTimeout(1050) + 固定话术</td><td>真 LLM 推理 + SSE 阶段/增量事件 + 八级校验</td></tr><tr><td>模型形态定义权</td><td>前端字面量形状（fields: string[]）</td><td>shared JSON Schema（additionalProperties:false，前后端共用）</td></tr><tr><td>关系表示</td><td>名称三元组 {from,label,to}</td><td>{id, from:objId, to:objId} + 端点存在性校验</td></tr><tr><td>支撑度来源</td><td>字面量 coverage: 86</td><td>activityCoverage(requirements) 由逐项状态推导</td></tr><tr><td>讨论能力</td><td>关键词分支模板回复</td><td>provider 驱动 +「此轮仅讨论，不声称修改了模型」</td></tr><tr><td>Provider 抽象</td><td>VITE_* 变量存在性判断</td><td>双 provider 统一接口，4 行分发，凭据服务端独占</td></tr><tr><td>阶段 / 视图</td><td>4 视图</td><td>5 视图（新增业务理解、模型自述），阶段即 UI</td></tr><tr><td>失败策略</td><td>演示兜底（demo provider 让流程先可用）</td><td>显式报错 + 保留草稿 + 禁止静默兜底</td></tr><tr><td>工程基线</td><td>无测试、无部署</td><td>node --test 3 例 + systemd + 子模块工作流</td></tr><tr><td>前端状态复杂度</td><td>13 个 useState</td><td>28 个 useState（流式 / 阶段 / 多 provider 的成本）</td></tr></tbody></table><h3>驱动力量</h3><div class="grid2"><div class="card"><span class="tag" style="background:var(--green-soft);color:var(--green-dark)">力量 1</span><h4>诚实性觉醒</h4><p>阶段 B 的坦白（「demo provider 让流程先可用」）在阶段 C 被改写为禁令（「never silently falls back to fixed demo data」）。驱动力不是性能或功能，而是<b>工具的可信性定位</b>——一个会编造领域模型的演示工具没有价值。</p></div><div class="card"><span class="tag" style="background:var(--blue-soft);color:var(--blue)">力量 2</span><h4>概念边界重划（范式觉醒）</h4><p>README 首行重写意味着「Forge 的产物是什么」被重新定义：从运行时的已验证模型，变成可导出前的中立候选 + 证据。这一个定义变化一次性决定了契约层、守护层与 UI 三者的存在理由。</p></div><div class="card"><span class="tag" style="background:var(--amber-soft);color:var(--amber)">力量 3</span><h4>真实故障反向塑造基础层</h4><p>接入真 LLM 后，「转述引文」「围栏包裹 JSON」「紧凑词汇」「长思考流」等真实故障立刻要求规范化器、解析器、delta 分类器与证据修复器——守护层的每一条几乎都对应一种具体不可靠性。</p></div><div class="card"><span class="tag" style="background:#e8d9b8;color:#6d4712">力量 4</span><h4>方法论先于代码</h4><p>阶段 A 的「先概念后过程」、阶段 C 新增的「建模采用三个阶段」段落都先出现在 README，随后才在 prompt 与 runAnalysis 中兑现——文档沉淀驱动实现，而非事后补写。</p></div></div></section><section id="s6"><h2><span class="sec-no">6</span>演化的残留与漂移（诚实清单）</h2><p>演化并非无损。以下残留可在代码中直接指认——它们恰好标出了下一步该收的尾。</p><table><thead><tr><th>残留</th><th>位置</th><th>性质</th></tr></thead><tbody><tr><td>ActivitiesView 组件已无渲染点</td><td>src/main.jsx:606</td><td>阶段 B 的「业务活动」视图残留（职责被 AssessmentView 吸收）</td></tr><tr><td>modelDiff 导出但无任何调用</td><td>shared/model-contract.js:40</td><td>为 graph review 预留但尚未接线的 API</td></tr><tr><td>llmConfigured 退化为常量 true</td><td>src/main.jsx:112</td><td>阶段 B 的凭据自检被删除，顶栏指示灯恒为在线 —— <b>演化中丢失的一处诚实性</b></td></tr><tr><td>README 称默认提供方为 Codex，代码默认 deepseek</td><td>README vs main.jsx:104 / codex-acp.js:49</td><td>文档与代码漂移</td></tr><tr><td>未使用的图标导入 GitBranch / Zap / ShieldCheck</td><td>src/main.jsx:3-33</td><td>原型期遗留</td></tr></tbody></table><div class="callout red"><span class="t">值得单独点名的一条</span>旧版 <code>llmConfigured = Boolean(import.meta.env.VITE_LLM_API_URL &amp;&amp; import.meta.env.VITE_LLM_MODEL)</code> 虽然把凭据暴露在前端（错误），但它<b>诚实地反映了「后端是否可用」</b>；新版把凭据正确地移到服务端（正确），却顺手把自检删成了常量 true（回退）。这是「修一个问题时丢掉另一个属性」的典型样本——正确做法是保留自检、但改为服务端健康检查接口。</div></section><section id="s7"><h2><span class="sec-no">7</span>结论</h2><div class="lead">UOM Forge 的 31 小时历史里发生了一次完整的范式切换：<b>从「用假数据演示一个建模工作台的形状」，到「用真推理但强校验的管道产出可被追责的候选模型」</b>。</div><p>这次切换的主导动作是<b>职责移动</b>而非功能增加——形状上移为契约、机制下沉为守护、领域词汇移出代码。三处残留（死视图、未接线 API、恒亮的在线指示灯）标出了收尾清单。</p><div class="callout info"><span class="t">方法论提示</span>本项目历史仅 3 个提交、无分支、无 stash，因此本报告不覆盖「长期领域模型扩张」，而是完整还原一次压缩在一天半内的范式切换。它恰好包含了一次单体演示壳 → 分层可信系统的完整重构，证据密度足以支撑演化规律结论（依据 skill 对小历史项目的约定，此处明示依据）。</div></section>
+      <footer style="margin-top:70px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px;display:flex;flex-wrap:wrap;gap:8px">
+        <span>UOM Forge 架构演化分析 · 源文档 analysis/UOM Forge 架构演化分析.md</span>
+        <span>UOM Forge 深度分析三部曲 · 双击 file:// 可直接阅读</span>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<script>
+/* ---------- 目录生成 + scrollspy ---------- */
+(function(){
+  var nav = document.getElementById('tocNav');
+  var sections = document.querySelectorAll('section[id]');
+  var html = '<div class="toc-label">目录</div>';
+  sections.forEach(function(s){
+    var no = s.querySelector('.sec-no');
+    var t = s.querySelector('h2');
+    if(!t) return;
+    var label = (no ? no.textContent + ' · ' : '') + t.textContent.replace(no ? no.textContent : '', '').trim();
+    html += '<a href="#' + s.id + '" data-target="' + s.id + '">' + label + '</a>';
+    s.querySelectorAll('h3').forEach(function(h3){
+      var id = s.id + '-' + h3.textContent.replace(/\s+/g,'').slice(0,8);
+      h3.id = id;
+      html += '<a class="l2" href="#' + id + '" data-target="' + id + '">' + h3.textContent + '</a>';
+    });
+  });
+  nav.innerHTML = html;
+  var links = nav.querySelectorAll('a');
+  var map = {};
+  links.forEach(function(a){ map[a.dataset.target] = a; });
+  var targets = [];
+  document.querySelectorAll('h2[id],h3[id],section[id]').forEach(function(el){ if(el.id) targets.push(el); });
+  window.addEventListener('scroll', function(){
+    var pos = window.scrollY + 90, current = null;
+    for(var i=0;i<targets.length;i++){
+      if(targets[i].offsetTop <= pos) current = targets[i];
+    }
+    links.forEach(function(a){ a.classList.remove('active'); });
+    if(current && map[current.id]) map[current.id].classList.add('active');
+  }, {passive:true});
+})();
+
+/* ---------- 巧思卡展开 ---------- */
+(function(){
+  document.querySelectorAll('.cv .cv-h').forEach(function(header){
+    header.addEventListener('click', function(){
+      header.parentElement.classList.toggle('open');
+    });
+  });
+})();
+
+/* ---------- 轻量代码高亮（Python / YAML） ---------- */
+(function(){
+  var KEYWORDS = new Set(("def class return import from if elif else for in not and or raise with try except lambda "+
+    "yield pass break continue global nonlocal del assert async await is None True False self super const let var function export default new typeof instanceof extends throw finally switch case do void delete static get set null undefined true false require").split(' '));
+  var YAML_KEYS = new Set(("schema name version description objects relations functions actions properties type required "+
+    "from to ref runtime implementation model property_definitions object_types relation_types interaction_policies "+
+    "presentation_tools available_on context_input requires confirmation handler icon inputs effects summary params "+
+    "status details role code amount period date datetime string number boolean json money open mutable source "+
+    "id_field config database kind display_name type_policy mutability data_source instructions acyclic from_types "+
+    "to_types default message create_object update_object delete_object create_relation update_relation delete_relation").split(' '));
+  function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function colorize(code, lang){
+    var out = '', i = 0, n = code.length;
+    var isYaml = lang === 'yaml';
+    while(i < n){
+      var c = code[i];
+      if(c === '/' && code[i+1] === '/'){   /* 整行 // 注释，避免误伤正则字面量 */
+        var k = i - 1, onlyWs = true;
+        while(k >= 0 && code[k] !== '\n'){ if(code[k] !== ' ' && code[k] !== '\t'){ onlyWs = false; break; } k--; }
+        if(onlyWs){ var j2 = code.indexOf('\n', i); if(j2 === -1) j2 = n;
+          out += '<span class="tok-c">' + esc(code.slice(i, j2)) + '</span>'; i = j2; continue; }
+      }
+      if(c === '#' && (i === 0 || code[i-1] === '\n')){
+        var j = code.indexOf('\n', i); if(j === -1) j = n;
+        out += '<span class="tok-c">' + esc(code.slice(i, j)) + '</span>'; i = j; continue;
+      }
+      if(c === '"' || c === "'"){
+        var q = c, j = i + 1;
+        while(j < n){ if(code[j] === q){ j++; break; } if(code[j] === '\\') j++; j++; }
+        out += '<span class="tok-s">' + esc(code.slice(i, j)) + '</span>'; i = j; continue;
+      }
+      if(/[0-9]/.test(c) || (c === '-' && /[0-9]/.test(code[i+1]||''))){
+        var j = i; while(j < n && /[0-9.\-]/.test(code[j])) j++;
+        out += '<span class="tok-n">' + esc(code.slice(i, j)) + '</span>'; i = j; continue;
+      }
+      if(/[A-Za-z_\u4e00-\u9fa5]/.test(c)){
+        var j = i; while(j < n && /[A-Za-z0-9_\u4e00-\u9fa5]/.test(code[j])) j++;
+        var word = code.slice(i, j);
+        var next = code[j] || '';
+        if(isYaml && next === ':' && YAML_KEYS.has(word)) out += '<span class="tok-k">' + esc(word) + '</span>';
+        else if(!isYaml && KEYWORDS.has(word)) out += '<span class="tok-k">' + esc(word) + '</span>';
+        else if(/^[A-Z]/.test(word)) out += '<span class="tok-f">' + esc(word) + '</span>';
+        else out += esc(word);
+        i = j; continue;
+      }
+      if(c === '(' || c === ')' || c === '[' || c === ']' || c === '{' || c === '}'){
+        out += '<span class="tok-p">' + c + '</span>'; i++; continue;
+      }
+      out += esc(c); i++;
+    }
+    return out;
+  }
+  document.querySelectorAll('pre code[data-lang]').forEach(function(el){
+    el.innerHTML = colorize(el.textContent, el.dataset.lang);
+  });
+})();
+</script>
+</body>
+</html>
