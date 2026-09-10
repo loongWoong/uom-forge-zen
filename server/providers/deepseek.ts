@@ -4,6 +4,14 @@ import { readSseData } from './sse.ts'
 import { isRecord } from '../validation/values.ts'
 import { createTurnTiming } from './timing.ts'
 
+// Optional output cap: some endpoints default to a few thousand tokens, which
+// truncates large JSON outputs. Set LLM_MAX_OUTPUT_TOKENS to raise it; when the
+// variable is absent or invalid no max_tokens field is sent at all.
+function maxOutputTokens(env: NodeJS.ProcessEnv): number | null {
+  const parsed = Number.parseInt(env.LLM_MAX_OUTPUT_TOKENS || '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
 export function createDeepSeekProvider(
   fetcher: typeof fetch = fetch,
   env: NodeJS.ProcessEnv = process.env,
@@ -42,6 +50,7 @@ export function createDeepSeekProvider(
           stream: true,
           thinking: { type: 'disabled' },
           messages: [{ role: 'user', content: prompt }],
+          ...(maxOutputTokens(env) ? { max_tokens: maxOutputTokens(env) } : {}),
         }),
       })
       timing.connected()

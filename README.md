@@ -106,6 +106,15 @@ are loaded from the parent UOM `.env` and remain server-side.
 All DeepSeek calls explicitly disable thinking with `thinking: { type: "disabled" }`
 while retaining streaming output and the configured `LLM_MODEL`.
 
+- 部分端点（如 DeepSeek）默认输出上限只有几千 token，大 JSON 会被截断；可在 .env
+  设置 `LLM_MAX_OUTPUT_TOKENS=32768` 显式放宽（需小于模型上下文减去提示词长度）。
+- 弱模型偶尔不按 JSON 输出（先输出规划文字）或被截断。服务端解析时会依次尝试：
+  提取混杂在文字里的最外层 JSON 对象、修复被截断的 JSON（在可解析候选中取最长者，
+  截断的根对象不会被内部片段冒充）；自动恢复发生时会作为 validation warnings 明确
+  提示，修复结果需重点核对。若无法恢复，报错会带上模型输出预览，便于判断问题。
+- 本轮正文上限默认 12 万字符，从不截断；推理模型上下文更大时可用 `UOM_MAX_DOC_CHARS`
+  调高（需确保 prompt tokens ≈ 正文字符数 × 1.25 后仍留有输出余量）。
+
 默认单次 ACP 分析最长等待 5 分钟。文档较大或 Codex 推理较慢时，可通过
 `CODEX_ACP_TIMEOUT_MS`（毫秒）调整，例如 `CODEX_ACP_TIMEOUT_MS=600000`。
 

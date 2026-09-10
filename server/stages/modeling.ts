@@ -1,4 +1,4 @@
-import { validateCompiledModel } from '../validation/compiled-model.ts'
+import { validateCompiledModelWithMeta } from '../validation/compiled-model.ts'
 import { requireText } from '../validation/document.ts'
 import { semanticModelPrompt, compileModelPrompt } from './prompts.ts'
 import type { ModelingInput, ModelingResult } from '../../shared/analysis.ts'
@@ -49,7 +49,8 @@ export async function compileModel(
       scopedTurn(options, 'compile'),
     )
     options.signal?.throwIfAborted()
-    const model = validateCompiledModel(raw)
+    // JSON 恢复（提取/截断修复）发生时明确告知用户，不把修复结果当完整结果展示。
+    const { model, notices } = validateCompiledModelWithMeta(raw)
     const elements =
       model.objects.length +
       model.relations.length +
@@ -63,7 +64,7 @@ export async function compileModel(
       provenance: { basis: 'business-understanding', evidence: 'unlinked' },
       validation: {
         elements,
-        warnings: ['基于业务说明建模，尚未关联原文证据。'],
+        warnings: [...notices, '基于业务说明建模，尚未关联原文证据。'],
       },
     }
   } catch (error) {
