@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   ClipboardCheck,
+  FilePlus2,
   FileText,
   Network,
   PanelRightClose,
@@ -54,6 +55,17 @@ import type {
   WorkspacePage,
 } from './types.ts'
 import { restoreProject } from './persistence.ts'
+import {
+  listProjects,
+  projectDisplayName,
+  projectHasContent,
+  projectTimestamp,
+  readActiveProjectId,
+  readProject,
+  writeActiveProjectId,
+  writeProject,
+  type ProjectSummary,
+} from './project-store.ts'
 import { discussionText, isStageResult } from './responses.ts'
 import { isRecord } from './values.ts'
 import { createId } from './id.ts'
@@ -116,9 +128,29 @@ function loadProject(): Project {
     return EMPTY_PROJECT
   }
 }
+/** Draft plus the saved-project library, ready for the topbar picker. */
+function loadInitialState(): {
+  project: Project
+  activeId: string
+  projects: ProjectSummary[]
+} {
+  const projects = listProjects(localStorage)
+  const stored = readActiveProjectId(localStorage)
+  return {
+    project: loadProject(),
+    // Drop a stale pointer so autosave registers the draft again.
+    activeId: projects.some((item) => item.id === stored) ? stored : '',
+    projects,
+  }
+}
 
 function App() {
-  const [project, setProject] = useState(loadProject)
+  const [initial] = useState(loadInitialState)
+  const [project, setProject] = useState(initial.project)
+  const [savedProjects, setSavedProjects] = useState<ProjectSummary[]>(
+    initial.projects,
+  )
+  const [activeProjectId, setActiveProjectId] = useState(initial.activeId)
   const [view, setView] = useState<WorkspacePage>('document')
   const [modelMode, setModelMode] = useState<ModelViewMode>('model')
   const [reviewMode, setReviewMode] = useState<ReviewViewMode>('narration')
@@ -214,6 +246,7 @@ function App() {
   const abortRef = useRef<AbortController | null>(null)
   const cancelled = useRef(false)
   const projectRef = useRef(project)
+  const activeIdRef = useRef(initial.activeId)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const followMessages = useRef(true)
   projectRef.current = project
@@ -252,13 +285,89 @@ function App() {
       messages: [...current.messages, { id: createId(), ...message }],
     }))
 
+  // Keep the project library in sync with the autosaved draft. The active
+  // project owns one index row; a draft with content is registered on its
+  // first autosave so 新建 can always switch away without losing work.
+  const persistProject = (next: Project) => {
+    const id = activeIdRef.current
+    if (id) {
+      setSavedProjects(writeProject(localStorage, id, next))
+      return
+    }
+    if (!projectHasContent(next)) return
+    const projects = writeProject(localStorage, createId(), next)
+    const created = projects[0]?.id || ''
+    activeIdRef.current = created
+    writeActiveProjectId(localStorage, created)
+    setActiveProjectId(created)
+    setSavedProjects(projects)
+  }
   const saveProject = (notify = false) => {
+    const next = projectRef.current
     try {
-      localStorage.setItem(STORAGE, JSON.stringify(projectRef.current))
-      if (notify) setToast('项目已保存')
+      localStorage.setItem(STORAGE, JSON.stringify(next))
     } catch {
       setToast('浏览器存储空间不足，草稿未能保存。请先导出或释放空间。')
+      return
     }
+    try {
+      persistProject(next)
+    } catch {
+      setToast('浏览器存储空间不足，项目未能保存。请先导出或释放空间。')
+      return
+    }
+    if (notify)
+      setToast(activeIdRef.current ? '项目已保存' : '还没有可保存的内容。')
+  }
+  const resetWorkspaceView = () => {
+    setView('document')
+    setModelMode('model')
+    setReviewMode('narration')
+    setSelectedId(null)
+    setDiscussionContext(null)
+    setEditing(false)
+    setEditedNarrative('')
+    setComparison(false)
+    setReadingText('')
+    setNarratingText('')
+    setJob(null)
+    setError('')
+    setDraft('')
+    setModelPickerOpen(false)
+  }
+  const freshProject = (): Project => ({
+    ...EMPTY_PROJECT,
+    answers: {},
+    outputs: {},
+    timings: {},
+    revisions: initialRevisions,
+    messages: EMPTY_PROJECT.messages.map((message) => ({ ...message })),
+  })
+  const newProject = () => {
+    // Flush the current draft into its library row before switching away.
+    saveProject()
+    activeIdRef.current = ''
+    writeActiveProjectId(localStorage, '')
+    setActiveProjectId('')
+    setProject(freshProject())
+    resetWorkspaceView()
+    setToast('已新建项目')
+  }
+  const openProject = (id: string) => {
+    if (!id || id === activeIdRef.current) return
+    const next = readProject(localStorage, id, EMPTY_PROJECT)
+    if (!next) {
+      setSavedProjects(listProjects(localStorage))
+      setToast('该项目已不存在，可能已被清理。')
+      return
+    }
+    saveProject()
+    activeIdRef.current = id
+    writeActiveProjectId(localStorage, id)
+    setActiveProjectId(id)
+    setProject(next)
+    resetWorkspaceView()
+    setToast(`已加载「${projectDisplayName(next)}」`)
   }
   useEffect(() => {
     const timer = setTimeout(() => saveProject(), 800)
@@ -972,13 +1081,49 @@ function App() {
               </div>
             </div>
           </div>
-          <button
-            className="icon-button"
-            aria-label="保存草稿"
-            onClick={() => saveProject(true)}
-          >
-            <Save size={18} />
-          </button>
+          <div className="project-actions">
+            <select
+              className="project-select"
+              aria-label="打开已保存的项目"
+              title="打开已保存的项目"
+              value={activeProjectId}
+              disabled={busy || discussing || savedProjects.length === 0}
+              onChange={(event) => openProject(event.target.value)}
+            >
+              <option value="">
+                {savedProjects.length === 0
+                  ? '暂无已保存项目'
+                  : activeProjectId
+                    ? '选择其他项目'
+                    : '打开已保存的项目'}
+              </option>
+              {savedProjects.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                  {item.updatedAt
+                    ? ` · ${projectTimestamp(item.updatedAt)}`
+                    : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              className="icon-button project-button"
+              aria-label="新建项目"
+              title="新建项目"
+              disabled={busy || discussing}
+              onClick={newProject}
+            >
+              <FilePlus2 size={18} />
+            </button>
+            <button
+              className="icon-button project-button"
+              aria-label="保存草稿"
+              title="保存项目"
+              onClick={() => saveProject(true)}
+            >
+              <Save size={18} />
+            </button>
+          </div>
           <button
             className="assistant-toggle secondary-button"
             aria-expanded={assistantOpen}

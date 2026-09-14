@@ -285,6 +285,28 @@ h4 {
 .icon-button:hover {
   background: #8999aa22;
 }
+.project-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.project-select {
+  max-width: 180px;
+  height: 31px;
+  padding: 0 8px;
+  border: 1px solid #53647d;
+  border-radius: 6px;
+  background: transparent;
+  color: #dfe8f5;
+  font-size: 11px;
+}
+.project-select:hover:not(:disabled) {
+  background: #8999aa22;
+}
+.project-select option {
+  color: #22314a;
+  background: #ffffff;
+}
 .text-button {
   display: inline-flex;
   align-items: center;
@@ -1921,8 +1943,12 @@ textarea:focus,
   .topbar-actions {
     gap: 5px;
   }
-  .topbar .icon-button {
+  .topbar .icon-button:not(.project-button) {
     display: none;
+  }
+  .project-select {
+    max-width: 118px;
+    font-size: 10px;
   }
   .assistant-toggle {
     font-size: 0;
