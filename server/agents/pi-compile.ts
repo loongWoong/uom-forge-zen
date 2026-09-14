@@ -15,7 +15,6 @@ export type JsonValidation = { valid: true } | { valid: false; error: string }
  * declare a result valid: the caller must parse and validate its JSON again.
  */
 export async function checkOrRepairCompiledJson(
-  semanticPlan: string,
   rawJson: string,
   provider: ProviderId,
   initialError: string,
@@ -29,6 +28,9 @@ export async function checkOrRepairCompiledJson(
   let toolRuns = 0
   let last: JsonValidation = { valid: false, error: initialError }
   let lastJson = ''
+  let deliveryRetryQueued = false
+  let lastAssistantText = ''
+  let requireTool = false
   const validateTool: AgentTool<typeof jsonSchema> = {
     name: 'validate_json',
     label: '程序校验模型 JSON',
@@ -53,7 +55,7 @@ export async function checkOrRepairCompiledJson(
   }
   const agent = new Agent({
     initialState: {
-      systemPrompt: '你是模型 JSON 修复 Agent。只修复程序报告的 JSON 语法、结构、ID 或引用错误，不重新设计业务，不增加、删除或改写建模说明中的业务语义。第一回合必须调用 validate_json；根据具体错误定点修复，再次校验；通过后立即调用 finish_json。最多修复两次，第四回合前必须提交；不要输出解释性长文。工具参数 json 必须是完整纯 JSON。',
+      systemPrompt: '你是模型 JSON 修复 Agent。只修复程序报告的 JSON 语法、结构、ID 或引用错误，不重新设计业务，不增加、删除或改写建模说明中的业务语义。第一回合必须调用 validate_json；根据具体错误定点修复，再次校验；通过后立即调用 finish_json。最多修复两次，第四回合前必须提交；不要输出解释性长文。工具参数 json 必须是完整纯 JSON。最终结果必须通过工具提交，不要把 JSON 作为普通文本回复。',
       model: toPiModel(config),
       thinkingLevel: 'minimal',
       tools: [validateTool, finishTool],
@@ -64,17 +66,26 @@ export async function checkOrRepairCompiledJson(
   agent.subscribe((event) => {
     if (event.type === 'turn_start') turns += 1
     if (event.type === 'tool_execution_start') {
+      requireTool = false
       toolRuns += 1
       options.onEvent?.({ type: 'phase', part: 'compile', text: 'Pi Agent 正在检查模型 JSON。' })
     }
-    if (event.type === 'message_end' && event.message.role === 'assistant' && event.message.errorMessage)
-      options.onEvent?.({ type: 'phase', part: 'compile', text: `Pi Agent 模型调用失败：${event.message.errorMessage}` })
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') options.onEvent?.({ type: 'delta', text: event.assistantMessageEvent.delta, size: event.assistantMessageEvent.delta.length })
+    if (event.type === 'message_end' && event.message.role === 'assistant') {
+      lastAssistantText = event.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
+      if (event.message.errorMessage) options.onEvent?.({ type: 'phase', part: 'compile', text: `Pi Agent 模型调用失败：${event.message.errorMessage}` })
+    }
+    if (event.type === 'turn_end' && event.message.role === 'assistant' && event.toolResults.length === 0 && !result && !deliveryRetryQueued) {
+      deliveryRetryQueued = true
+      requireTool = true
+      agent.followUp({ role: 'user', content: '请不要把 JSON 作为普通文本回复。立即调用 validate_json，并将当前完整 JSON 放入 json 参数；校验通过后再调用 finish_json。', timestamp: Date.now() })
+      options.onEvent?.({ type: 'phase', part: 'compile', text: 'JSON 已生成，正在请求 Agent 通过校验工具交接。' })
+    }
   })
   const abort = () => agent.abort()
   deadline.signal.addEventListener('abort', abort, { once: true })
   try {
-    await agent.prompt(`建模说明（只作为语义边界）：\n${semanticPlan}\n\n程序首次校验错误：\n${initialError}\n\n待修复模型 JSON：\n${rawJson}`)
+    await agent.prompt(`程序首次校验错误：\n${initialError}\n\n待修复模型 JSON：\n${rawJson}`)
   } finally {
     deadline.signal.removeEventListener('abort', abort)
     deadline.dispose()
@@ -82,6 +93,11 @@ export async function checkOrRepairCompiledJson(
   deadline.signal.throwIfAborted()
   const failure = piModelError(agent, 'Pi JSON 修复', toolRuns === 0)
   if (failure) throw failure
-  if (!result?.trim()) throw new Error('Pi Agent 未提交模型 JSON。')
+  if (!result?.trim() && deliveryRetryQueued) {
+    const match = lastAssistantText.match(/\{[\s\S]*\}/)
+    const candidate = match?.[0]?.trim()
+    if (candidate && validate(candidate).valid) result = candidate
+  }
+  if (!result?.trim()) throw new Error('Pi Agent 未通过提交工具交接模型 JSON。')
   return result
 }

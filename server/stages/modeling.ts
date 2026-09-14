@@ -112,7 +112,6 @@ async function compileReviewedPlan(
         process.env.UOM_AGENT_RUNTIME === 'pi')
     if (!initialValidation.valid && usePi) {
       raw = await checkOrRepairCompiledJson(
-        semanticPlan,
         raw,
         options.provider || 'gpt',
         initialValidation.error,

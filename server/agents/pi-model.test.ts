@@ -139,6 +139,33 @@ test('the GPT channel injects reasoning_effort and generic suppresses it', async
   }
 })
 
+test('the Qwen channel keeps the standard request shape and the qwen provider mapping', async () => {
+  const { recorder, url } = await mockEndpoint((_body, response) => streamOk(response))
+  try {
+    const config = resolveModelConfig('qwen', {
+      env: {
+        QWEN_API_URL: url,
+        QWEN_API_KEY: 'sk-test',
+        QWEN_MODEL: 'configured-qwen',
+      },
+    })
+    const model = toPiModel(config)
+    assert.equal(model.provider, 'qwen')
+    assert.equal(model.baseUrl, url)
+    assert.equal(model.maxTokens, 16384)
+    await drain(createPiStreamFn(config)(model, context) as AsyncIterable<unknown>)
+    const body = recorder.bodies[0]
+    assert.equal(body.model, 'configured-qwen')
+    assert.equal(body.max_tokens, 16384)
+    assert.equal(body.max_completion_tokens, undefined)
+    assert.equal(body.thinking, undefined)
+    assert.equal(body.reasoning_effort, undefined)
+    assert.equal(body.store, undefined)
+  } finally {
+    await recorder.close()
+  }
+})
+
 test('a provider rejection surfaces the HTTP reason instead of a generic Pi message', async () => {
   const { recorder, url } = await mockEndpoint((_body, response) => {
     response.writeHead(400, { 'content-type': 'application/json' })

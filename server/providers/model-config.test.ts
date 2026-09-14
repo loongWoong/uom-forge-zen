@@ -56,6 +56,45 @@ test('request override wins and GPT keeps its own endpoint, effort and no implic
   })
 })
 
+test('Qwen resolves its own endpoint and keeps the direct request shape', () => {
+  const qwenEnv: NodeJS.ProcessEnv = {
+    ...env,
+    QWEN_API_KEY: 'qwen-key',
+    QWEN_API_URL: 'http://qwen.invalid/v1',
+    QWEN_MODEL: 'configured-qwen',
+    QWEN_API_TIMEOUT_MS: '3000',
+  }
+  const config = resolveModelConfig('qwen', { env: qwenEnv })
+  assert.equal(config.provider, 'qwen')
+  assert.equal(config.label, 'Qwen')
+  assert.equal(config.modelId, 'configured-qwen')
+  assert.equal(config.apiKey, 'qwen-key')
+  assert.equal(config.baseUrl, 'http://qwen.invalid/v1')
+  assert.equal(config.chatCompletionsUrl, 'http://qwen.invalid/v1/chat/completions')
+  assert.equal(config.timeoutMs, 3000)
+  assert.equal(config.maxOutputTokens, 16384)
+  assert.equal(config.reasoningEffort, undefined)
+  assert.equal(config.piProvider, 'qwen')
+  assert.deepEqual(config.pi, {
+    maxTokens: 16384,
+    contextWindow: 128000,
+    disableThinking: false,
+    compat: { supportsStore: false, maxTokensField: 'max_tokens' },
+  })
+  assert.throws(() => resolveModelConfig('qwen', { env: {} }), /Qwen 未配置/)
+
+  const generic = resolveModelConfig('qwen', {
+    env: { ...qwenEnv, UOM_PI_COMPAT: 'generic' },
+  })
+  assert.deepEqual(generic.pi.compat, {
+    supportsStore: false,
+    maxTokensField: 'max_tokens',
+    supportsUsageInStreaming: false,
+    supportsStrictMode: false,
+    supportsReasoningEffort: false,
+  })
+})
+
 test('invalid output-token settings fail loudly instead of reaching the endpoint', () => {
   assert.throws(
     () =>

@@ -14,7 +14,7 @@ export function toPiModel(config: ModelConfig): Model<'openai-completions'> {
     id: config.modelId,
     name: config.modelId,
     api: 'openai-completions',
-    provider: config.provider === 'gpt' ? 'openai' : 'deepseek',
+    provider: config.piProvider,
     baseUrl: config.baseUrl,
     reasoning: false,
     input: ['text'],

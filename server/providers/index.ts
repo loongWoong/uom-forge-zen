@@ -6,13 +6,14 @@ import { normalizeEndpoint } from './model-config.ts'
 // import { createCodexProvider } from './codex.ts'
 import { createDeepSeekProvider } from './deepseek.ts'
 import { createGptProvider } from './gpt.ts'
+import { createQwenProvider } from './qwen.ts'
 
 export function resolveProvider(
   value: unknown = process.env.UOM_LLM_PROVIDER || DEFAULT_PROVIDER,
 ): ProviderId {
   if (value === 'codex')
-    throw new Error('Codex ACP 已停用，请选择 DeepSeek 或 GPT。')
-  if (value !== 'gpt' && value !== 'deepseek')
+    throw new Error('Codex ACP 已停用，请选择 DeepSeek、GPT 或 Qwen。')
+  if (value !== 'gpt' && value !== 'deepseek' && value !== 'qwen')
     throw new Error('不支持的推理提供方。')
   return value
 }
@@ -31,18 +32,26 @@ export function providerDescriptor(
   const deepseekModel = env.LLM_MODEL || 'deepseek-chat'
   const gptReady = Boolean(env.GPT_API_URL && env.GPT_API_KEY)
   const gptModel = env.GPT_MODEL || 'gpt-6-astra'
+  const qwenReady = Boolean(env.QWEN_API_URL && env.QWEN_API_KEY)
+  const qwenModel = env.QWEN_MODEL || 'Qwen3.6'
   const provider = resolveProvider(env.UOM_LLM_PROVIDER)
+  const models: Record<ProviderId, string> = {
+    deepseek: deepseekModel,
+    gpt: gptModel,
+    qwen: qwenModel,
+  }
   const runtime =
     env.UOM_AGENT_RUNTIME === 'direct' || env.UOM_AGENT_RUNTIME === 'pi'
       ? env.UOM_AGENT_RUNTIME
       : undefined
   return {
     provider,
-    model: provider === 'deepseek' ? deepseekModel : gptModel,
+    model: models[provider],
     ...(runtime ? { runtime } : {}),
     options: [
       { value: 'deepseek', model: deepseekModel, ready: deepseekReady },
       { value: 'gpt', model: gptModel, ready: gptReady },
+      { value: 'qwen', model: qwenModel, ready: qwenReady },
     ],
   }
 }
@@ -58,9 +67,12 @@ export async function listEndpointModels(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string[]> {
   const label = PROVIDERS[provider].name
-  const prefix = provider === 'gpt' ? 'GPT' : 'LLM'
-  const configuredUrl = provider === 'gpt' ? env.GPT_API_URL : env.LLM_API_URL
-  const apiKey = provider === 'gpt' ? env.GPT_API_KEY : env.LLM_API_KEY
+  const credentials: Record<ProviderId, { prefix: string; url?: string; key?: string }> = {
+    deepseek: { prefix: 'LLM', url: env.LLM_API_URL, key: env.LLM_API_KEY },
+    gpt: { prefix: 'GPT', url: env.GPT_API_URL, key: env.GPT_API_KEY },
+    qwen: { prefix: 'QWEN', url: env.QWEN_API_URL, key: env.QWEN_API_KEY },
+  }
+  const { prefix, url: configuredUrl, key: apiKey } = credentials[provider]
   if (!configuredUrl || !apiKey)
     throw new Error(`${label} 未配置 ${prefix}_API_KEY 或 ${prefix}_API_URL，无法获取模型列表。`)
   const baseUrl = normalizeEndpoint(configuredUrl)
@@ -86,6 +98,7 @@ export async function listEndpointModels(
 const providers: Record<ProviderId, RunTurn> = {
   deepseek: createDeepSeekProvider(),
   gpt: createGptProvider(),
+  qwen: createQwenProvider(),
 }
 export const runProviderTurn: RunTurn = (prompt, options = {}) => {
   options.signal?.throwIfAborted()

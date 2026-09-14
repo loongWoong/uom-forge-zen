@@ -149,15 +149,17 @@ function App() {
   const [providerModels, setProviderModels] = useState<Record<ProviderId, string>>({
     deepseek: '',
     gpt: '',
+    qwen: '',
   })
   const [modelOverride, setModelOverride] = useState<Record<ProviderId, string>>(() => ({
     deepseek: localStorage.getItem('uom-forge-model-deepseek') || '',
     gpt: localStorage.getItem('uom-forge-model-gpt') || '',
+    qwen: localStorage.getItem('uom-forge-model-qwen') || '',
   }))
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [availableModels, setAvailableModels] = useState<
     Record<ProviderId, string[] | null>
-  >({ deepseek: null, gpt: null })
+  >({ deepseek: null, gpt: null, qwen: null })
   const [modelsError, setModelsError] = useState('')
   const [modelDraft, setModelDraft] = useState('')
   useEffect(() => {
@@ -167,9 +169,9 @@ function App() {
       .then((config: { options?: { value?: string; model?: string }[]; runtime?: string } | null) => {
         if (cancelled) return
         if (Array.isArray(config?.options)) {
-          const map: Record<ProviderId, string> = { deepseek: '', gpt: '' }
+          const map: Record<ProviderId, string> = { deepseek: '', gpt: '', qwen: '' }
           for (const option of config.options)
-            if (option.value === 'deepseek' || option.value === 'gpt')
+            if (option.value === 'deepseek' || option.value === 'gpt' || option.value === 'qwen')
               map[option.value] = option.model || ''
           setProviderModels(map)
         }
@@ -896,7 +898,7 @@ function App() {
           <div className="runtime-choice">
             <span className="choice-label">模型</span>
             <div className="provider-switch" aria-label="推理提供方">
-              {(['deepseek', 'gpt'] as const).map((value) => (
+              {(['deepseek', 'gpt', 'qwen'] as const).map((value) => (
                 <button
                   key={value}
                   disabled={busy || discussing}
@@ -920,7 +922,7 @@ function App() {
                 </button>
                 {modelPickerOpen && (
                   <div className="model-popover" role="dialog" aria-label="切换模型">
-                    <strong>{provider === 'deepseek' ? 'DeepSeek 模型' : 'GPT 模型'}</strong>
+                    <strong>{PROVIDERS[provider].name} 模型</strong>
                     <div className="model-list">
                       {availableModels[provider] === null && !modelsError && (
                         <small>正在获取模型列表…</small>

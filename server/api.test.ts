@@ -190,6 +190,9 @@ test('/api/config reports the effective provider and model without secrets', asy
       GPT_API_URL: process.env.GPT_API_URL,
       GPT_API_KEY: process.env.GPT_API_KEY,
       GPT_MODEL: process.env.GPT_MODEL,
+      QWEN_API_URL: process.env.QWEN_API_URL,
+      QWEN_API_KEY: process.env.QWEN_API_KEY,
+      QWEN_MODEL: process.env.QWEN_MODEL,
     }
     process.env.UOM_LLM_PROVIDER = 'deepseek'
     process.env.UOM_AGENT_RUNTIME = 'pi'
@@ -199,6 +202,9 @@ test('/api/config reports the effective provider and model without secrets', asy
     process.env.GPT_API_URL = 'http://test.invalid/v1'
     process.env.GPT_API_KEY = 'k'
     process.env.GPT_MODEL = 'gpt-6-astra'
+    delete process.env.QWEN_API_URL
+    delete process.env.QWEN_API_KEY
+    delete process.env.QWEN_MODEL
     try {
       const response = await fetch(url + '/api/config')
       assert.equal(response.status, 200)
@@ -214,6 +220,7 @@ test('/api/config reports the effective provider and model without secrets', asy
       assert.deepEqual(body.options, [
         { value: 'deepseek', model: 'qwen3.8-flash', ready: true },
         { value: 'gpt', model: 'gpt-6-astra', ready: true },
+        { value: 'qwen', model: 'Qwen3.6', ready: false },
       ])
       assert.equal((await fetch(url + '/api/config', { method: 'POST' })).status, 405)
     } finally {

@@ -6,7 +6,8 @@ import { timeoutFromEnv } from './lifetime.ts'
  * Single source of truth for model configuration. Both runtimes resolve their
  * endpoint, credentials, model id, timeouts and request parameters here:
  *
- *   direct runtime -> providers/deepseek.ts | providers/gpt.ts -> chat-completions.ts
+ *   direct runtime -> providers/deepseek.ts | providers/gpt.ts | providers/qwen.ts
+ *                     -> chat-completions.ts
  *   Pi runtime     -> agents/pi-model.ts (toPiModel / createPiStreamFn)
  *
  * Reading the environment in one place keeps the two clients from drifting
@@ -35,10 +36,12 @@ export interface ModelConfig {
   chatCompletionsUrl: string
   /** Per-call timeout for the direct client; also the default Pi stage budget. */
   timeoutMs: number
-  /** Direct-client output cap. DeepSeek always sends it; GPT only when configured. */
+  /** Direct-client output cap. DeepSeek and Qwen always send it; GPT only when configured. */
   maxOutputTokens?: number
   /** GPT reasoning effort for the direct client. */
   reasoningEffort?: string
+  /** pi-ai provider name (`openai` / `deepseek` / `qwen`). */
+  piProvider: string
   pi: PiModelSettings
 }
 
@@ -88,10 +91,90 @@ function optionalPositiveInt(
   return positiveInt(value, name, 1)
 }
 
+interface ProviderProfile {
+  label: string
+  apiKey?: string
+  url?: string
+  model: string
+  timeoutEnv?: string
+  maxOutputTokens?: number
+  reasoningEffort?: string
+  /** Direct requests carry `thinking: { type: 'disabled' }` for this provider. */
+  disableThinking: boolean
+  piProvider: string
+  /** Per-provider pi-ai compat that keeps Pi requests aligned with the direct client. */
+  compat: OpenAICompletionsCompat
+}
+
+function credentialNames(provider: ProviderId): string {
+  const prefix = provider === 'gpt' ? 'GPT' : provider === 'qwen' ? 'QWEN' : 'LLM'
+  return `${prefix}_API_KEY 或 ${prefix}_API_URL`
+}
+
+/** Environment-backed defaults for one provider, read by both runtimes. */
+function providerProfile(
+  provider: ProviderId,
+  env: NodeJS.ProcessEnv,
+): ProviderProfile {
+  if (provider === 'gpt')
+    return {
+      label: 'GPT',
+      apiKey: env.GPT_API_KEY,
+      url: env.GPT_API_URL,
+      model: env.GPT_MODEL || 'gpt-6-astra',
+      timeoutEnv: env.GPT_API_TIMEOUT_MS,
+      maxOutputTokens: optionalPositiveInt(
+        env.GPT_MAX_OUTPUT_TOKENS,
+        'GPT_MAX_OUTPUT_TOKENS',
+      ),
+      reasoningEffort: env.GPT_REASONING_EFFORT || 'medium',
+      disableThinking: false,
+      piProvider: 'openai',
+      compat: {},
+    }
+  if (provider === 'qwen')
+    return {
+      label: 'Qwen',
+      apiKey: env.QWEN_API_KEY,
+      url: env.QWEN_API_URL,
+      model: env.QWEN_MODEL || 'Qwen3.6',
+      timeoutEnv: env.QWEN_API_TIMEOUT_MS,
+      maxOutputTokens: positiveInt(
+        env.QWEN_MAX_OUTPUT_TOKENS,
+        'QWEN_MAX_OUTPUT_TOKENS',
+        16384,
+      ),
+      disableThinking: false,
+      piProvider: 'qwen',
+      // Qwen direct requests send a plain max_tokens and no store flag; keep
+      // the Pi adapter on the same shape for this OpenAI-compatible endpoint.
+      compat: { supportsStore: false, maxTokensField: 'max_tokens' },
+    }
+  return {
+    label: 'DeepSeek',
+    apiKey: env.LLM_API_KEY,
+    url: env.LLM_API_URL,
+    model: env.LLM_MODEL || 'deepseek-chat',
+    timeoutEnv: env.LLM_API_TIMEOUT_MS,
+    maxOutputTokens: positiveInt(
+      env.LLM_MAX_OUTPUT_TOKENS,
+      'LLM_MAX_OUTPUT_TOKENS',
+      16384,
+    ),
+    disableThinking: true,
+    piProvider: 'deepseek',
+    compat: {},
+  }
+}
+
 /** `UOM_PI_COMPAT=generic` switches off the vendor-specific extensions a minimal
  *  OpenAI-compatible gateway is likely to reject. Individual flags win over it. */
-function piCompat(env: NodeJS.ProcessEnv, generic: boolean): OpenAICompletionsCompat {
-  const compat: OpenAICompletionsCompat = {}
+function piCompat(
+  env: NodeJS.ProcessEnv,
+  generic: boolean,
+  base: OpenAICompletionsCompat,
+): OpenAICompletionsCompat {
+  const compat: OpenAICompletionsCompat = { ...base }
   if (generic) {
     compat.supportsUsageInStreaming = false
     compat.supportsStrictMode = false
@@ -122,30 +205,18 @@ export function resolveModelConfig(
   options: { override?: string; env?: NodeJS.ProcessEnv } = {},
 ): ModelConfig {
   const env = options.env || process.env
-  const isGpt = provider === 'gpt'
-  const label = isGpt ? 'GPT' : 'DeepSeek'
-  const apiKey = isGpt ? env.GPT_API_KEY : env.LLM_API_KEY
-  const rawUrl = isGpt ? env.GPT_API_URL : env.LLM_API_URL
-  if (!apiKey || !rawUrl)
+  const profile = providerProfile(provider, env)
+  if (!profile.apiKey || !profile.url)
     throw new Error(
-      `${label} 未配置 ${isGpt ? 'GPT' : 'LLM'}_API_KEY 或 ${isGpt ? 'GPT' : 'LLM'}_API_URL。`,
+      `${profile.label} 未配置 ${credentialNames(provider)}。`,
     )
   const override = options.override?.trim()
-  const modelId =
-    (override ? override : undefined) ||
-    (isGpt ? env.GPT_MODEL : env.LLM_MODEL) ||
-    (isGpt ? 'gpt-6-astra' : 'deepseek-chat')
-  const baseUrl = normalizeEndpoint(rawUrl)
-  if (!baseUrl) throw new Error(`${label} 的 API URL 无效。`)
-  const timeoutMs = timeoutFromEnv(
-    isGpt ? env.GPT_API_TIMEOUT_MS : env.LLM_API_TIMEOUT_MS,
-  )
-  const maxOutputTokens = isGpt
-    ? optionalPositiveInt(env.GPT_MAX_OUTPUT_TOKENS, 'GPT_MAX_OUTPUT_TOKENS')
-    : positiveInt(env.LLM_MAX_OUTPUT_TOKENS, 'LLM_MAX_OUTPUT_TOKENS', 16384)
-  const reasoningEffort = isGpt
-    ? env.GPT_REASONING_EFFORT || 'medium'
-    : undefined
+  const modelId = override || profile.model
+  const baseUrl = normalizeEndpoint(profile.url)
+  if (!baseUrl) throw new Error(`${profile.label} 的 API URL 无效。`)
+  const timeoutMs = timeoutFromEnv(profile.timeoutEnv)
+  const maxOutputTokens = profile.maxOutputTokens
+  const reasoningEffort = profile.reasoningEffort
 
   const generic = (env.UOM_PI_COMPAT || '').trim().toLowerCase() === 'generic'
   if (
@@ -156,7 +227,7 @@ export function resolveModelConfig(
     throw new Error('UOM_PI_COMPAT 目前只支持 generic。')
   const disableThinking =
     envBoolean(env.UOM_PI_DISABLE_THINKING, 'UOM_PI_DISABLE_THINKING') ??
-    (!isGpt && !generic)
+    (profile.disableThinking && !generic)
   const rawPiEffort = env.UOM_PI_REASONING_EFFORT
   const piEffort =
     rawPiEffort === undefined
@@ -176,19 +247,22 @@ export function resolveModelConfig(
       optionalPositiveInt(env.UOM_PI_CONTEXT_WINDOW, 'UOM_PI_CONTEXT_WINDOW') ??
       128000,
     disableThinking,
-    ...(disableThinking ? {} : { reasoningEffort: piEffort }),
-    compat: piCompat(env, generic),
+    ...(disableThinking || piEffort === undefined
+      ? {}
+      : { reasoningEffort: piEffort }),
+    compat: piCompat(env, generic, profile.compat),
   }
   return {
     provider,
-    label,
+    label: profile.label,
     modelId,
-    apiKey,
+    apiKey: profile.apiKey,
     baseUrl,
-    chatCompletionsUrl: directUrl(rawUrl),
+    chatCompletionsUrl: directUrl(profile.url),
     timeoutMs,
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    piProvider: profile.piProvider,
     pi,
   }
 }
