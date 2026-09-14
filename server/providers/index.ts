@@ -1,12 +1,17 @@
 import type { ProviderId } from '../../shared/analysis.ts'
+import { DEFAULT_PROVIDER } from '../../shared/analysis.ts'
 import type { RunTurn } from './types.ts'
-import { createCodexProvider, codexConfigFromEnv } from './codex.ts'
+// ACP is disabled in the application; retain the adapter for manual experiments.
+// import { createCodexProvider } from './codex.ts'
 import { createDeepSeekProvider } from './deepseek.ts'
+import { createGptProvider } from './gpt.ts'
 
 export function resolveProvider(
-  value: unknown = process.env.UOM_LLM_PROVIDER || 'deepseek',
+  value: unknown = process.env.UOM_LLM_PROVIDER || DEFAULT_PROVIDER,
 ): ProviderId {
-  if (value !== 'codex' && value !== 'deepseek')
+  if (value === 'codex')
+    throw new Error('Codex ACP 已停用，请选择 DeepSeek 或 GPT。')
+  if (value !== 'gpt' && value !== 'deepseek')
     throw new Error('不支持的推理提供方。')
   return value
 }
@@ -21,18 +26,15 @@ export function providerDescriptor(
 } {
   const deepseekReady = Boolean(env.LLM_API_URL && env.LLM_API_KEY)
   const deepseekModel = env.LLM_MODEL || 'deepseek-chat'
-  let codexModel = 'gpt-6-astra'
-  try {
-    codexModel = String(codexConfigFromEnv(env).model)
-  } catch {
-    // malformed CODEX_CONFIG keeps the documented default
-  }
+  const gptReady = Boolean(env.GPT_API_URL && env.GPT_API_KEY)
+  const gptModel = env.GPT_MODEL || 'gpt-6-astra'
+  const provider = resolveProvider(env.UOM_LLM_PROVIDER)
   return {
-    provider: resolveProvider(env.UOM_LLM_PROVIDER),
-    model: resolveProvider(env.UOM_LLM_PROVIDER) === 'deepseek' ? deepseekModel : codexModel,
+    provider,
+    model: provider === 'deepseek' ? deepseekModel : gptModel,
     options: [
       { value: 'deepseek', model: deepseekModel, ready: deepseekReady },
-      { value: 'codex', model: codexModel, ready: true },
+      { value: 'gpt', model: gptModel, ready: gptReady },
     ],
   }
 }
@@ -68,11 +70,12 @@ export async function listEndpointModels(
     .filter(Boolean)
   return [...new Set(ids)]
 }
-const codex = createCodexProvider()
-const deepseek = createDeepSeekProvider()
+// const codex = createCodexProvider()
+const providers: Record<ProviderId, RunTurn> = {
+  deepseek: createDeepSeekProvider(),
+  gpt: createGptProvider(),
+}
 export const runProviderTurn: RunTurn = (prompt, options = {}) => {
   options.signal?.throwIfAborted()
-  return resolveProvider(options.provider) === 'codex'
-    ? codex(prompt, options)
-    : deepseek(prompt, options)
+  return providers[resolveProvider(options.provider)](prompt, options)
 }

@@ -1,122 +1,29 @@
 import type { RunTurn } from './types.ts'
-import { createDeadline, timeoutFromEnv } from './lifetime.ts'
-import { readSseData } from './sse.ts'
-import { isRecord } from '../validation/values.ts'
-import { createTurnTiming } from './timing.ts'
-
-// Optional output cap: some endpoints default to a few thousand tokens, which
-// truncates large JSON outputs. Set LLM_MAX_OUTPUT_TOKENS to raise it; when the
-// variable is absent or invalid no max_tokens field is sent at all.
-function maxOutputTokens(env: NodeJS.ProcessEnv): number | null {
-  const parsed = Number.parseInt(env.LLM_MAX_OUTPUT_TOKENS || '', 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
-}
+import { createChatCompletionsProvider } from './chat-completions.ts'
+import { timeoutFromEnv } from './lifetime.ts'
 
 export function createDeepSeekProvider(
   fetcher: typeof fetch = fetch,
   env: NodeJS.ProcessEnv = process.env,
 ): RunTurn {
-  return async (prompt, options = {}) => {
-    options.signal?.throwIfAborted()
+  return createChatCompletionsProvider(() => {
     const apiKey = env.LLM_API_KEY
-    const configuredUrl = env.LLM_API_URL
-    if (!apiKey || !configuredUrl)
+    const url = env.LLM_API_URL
+    if (!apiKey || !url)
       throw new Error('DeepSeek 未配置 LLM_API_KEY 或 LLM_API_URL。')
-    const baseUrl = configuredUrl.replace(/\/+$/, '')
-    const url = /\/chat\/completions$/i.test(baseUrl)
-      ? baseUrl
-      : `${baseUrl}/chat/completions`
-    // Per-call override wins over the environment default so the UI can switch models.
-    const model = options.model || env.LLM_MODEL || 'deepseek-chat'
-    const timing = createTurnTiming(
-      { provider: 'deepseek', model },
-      prompt,
-      options.onEvent,
-    )
-    const deadline = createDeadline(
-      options.signal,
-      timeoutFromEnv(env.LLM_API_TIMEOUT_MS),
-      'DeepSeek 请求',
-    )
-    try {
-      const response = await fetcher(url, {
-        method: 'POST',
-        signal: deadline.signal,
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          stream: true,
-          thinking: { type: 'disabled' },
-          messages: [{ role: 'user', content: prompt }],
-          ...(maxOutputTokens(env) ? { max_tokens: maxOutputTokens(env) } : {}),
-        }),
-      })
-      timing.connected()
-      if (!response.ok)
-        throw new Error(
-          `DeepSeek 返回 HTTP ${response.status}：${(await response.text()).slice(0, 800)}`,
-        )
-      if (!response.body) throw new Error('DeepSeek 没有返回流式响应。')
-      let text = ''
-      let completed = false
-      for await (const data of readSseData(response.body, deadline.signal)) {
-        if (data === '[DONE]') {
-          completed = true
-          break
-        }
-        let chunk: unknown
-        try {
-          chunk = JSON.parse(data) as unknown
-        } catch {
-          throw new Error('DeepSeek 返回了无效的流式 JSON。')
-        }
-        if (!isRecord(chunk)) throw new Error('DeepSeek 返回了无效的消息。')
-        if (isRecord(chunk.error))
-          throw new Error(
-            `DeepSeek：${String(chunk.error.message || '推理失败')}`,
-          )
-        const choice: unknown = Array.isArray(chunk.choices)
-          ? chunk.choices[0]
-          : undefined
-        if (!isRecord(choice)) continue
-        const delta = isRecord(choice.delta) ? choice.delta : {}
-        if (
-          typeof delta.reasoning_content === 'string' &&
-          delta.reasoning_content
-        )
-          options.onEvent?.({
-            type: 'delta',
-            text: delta.reasoning_content,
-            reasoning: true,
-          })
-        if (typeof delta.content === 'string' && delta.content) {
-          text += delta.content
-          timing.output(delta.content)
-          options.onEvent?.({
-            type: 'delta',
-            text: delta.content,
-            size: text.length,
-          })
-        }
-        if (choice.finish_reason === 'stop') completed = true
-        else if (choice.finish_reason)
-          throw new Error(
-            `DeepSeek 输出未正常完成（${String(choice.finish_reason)}）。`,
-          )
-      }
-      deadline.signal.throwIfAborted()
-      if (!completed) throw new Error('DeepSeek 连接提前结束，输出尚未完成。')
-      timing.finish('completed')
-      return text
-    } catch (error) {
-      timing.finish(options.signal?.aborted ? 'cancelled' : 'failed')
-      deadline.signal.throwIfAborted()
-      throw error
-    } finally {
-      deadline.dispose()
+    // Candidate JSON can be large; reserve enough room for validation rather
+    // than allowing the provider to truncate a structurally valid model.
+    const maxTokens = Number(env.LLM_MAX_OUTPUT_TOKENS || 16384)
+    if (!Number.isSafeInteger(maxTokens) || maxTokens < 1)
+      throw new Error('LLM_MAX_OUTPUT_TOKENS 必须为正整数。')
+    return {
+      provider: 'deepseek',
+      label: 'DeepSeek',
+      apiKey,
+      url,
+      model: env.LLM_MODEL || 'deepseek-chat',
+      timeoutMs: timeoutFromEnv(env.LLM_API_TIMEOUT_MS),
+      parameters: { thinking: { type: 'disabled' }, max_tokens: maxTokens },
     }
-  }
+  }, fetcher)
 }

@@ -1,9 +1,20 @@
-import { validateCompiledModelWithMeta } from '../validation/compiled-model.ts'
+import {
+  validateCompiledModel,
+  validateCompiledModelWithMeta,
+} from '../validation/compiled-model.ts'
 import { requireText } from '../validation/document.ts'
 import { semanticModelPrompt, compileModelPrompt } from './prompts.ts'
 import type { ModelingInput, ModelingResult } from '../../shared/analysis.ts'
 import type { RunTurn } from '../providers/types.ts'
 import { scopedTurn, type StageOptions } from './contracts.ts'
+import { checkAndRepair } from './expression.ts'
+import {
+  modelingContent,
+  reviewModelClarifications,
+  type ClarificationReview,
+} from '../../shared/clarifications.ts'
+import { runPiModeling } from '../agents/pi-modeling.ts'
+import { checkOrRepairCompiledJson } from '../agents/pi-compile.ts'
 
 export async function buildModel(
   input: ModelingInput,
@@ -18,37 +29,90 @@ export async function buildModel(
     part: 'semantic',
     text: '第二阶段 A：形成建模说明。',
   })
-  const semanticPlan = await runTurn(
-    semanticModelPrompt(input),
-    scopedTurn(options, 'semantic'),
-  )
+  const usePi = options.runtime === 'pi' || (options.runtime === undefined && process.env.UOM_AGENT_RUNTIME === 'pi')
+  const semanticPlan = usePi
+    ? await runPiModeling(input, runTurn, options)
+    : await runTurn(semanticModelPrompt(input), scopedTurn(options, 'semantic'))
   options.signal?.throwIfAborted()
   if (!semanticPlan.trim()) throw new Error('未返回建模说明。')
+  const review = reviewModelClarifications(semanticPlan, input.narrative)
   // Publish before compilation so errors or cancellation cannot erase it.
-  report({ type: 'model-plan', part: 'semantic', semanticPlan })
+  report({ type: 'model-plan', part: 'semantic', semanticPlan, ...review })
   options.signal?.throwIfAborted()
-  return compileModel(semanticPlan, runTurn, options)
+  const compiled = await compileReviewedPlan(
+    semanticPlan,
+    review,
+    runTurn,
+    options,
+  )
+  return checkAndRepair(compiled, input.narrative, runTurn, options)
 }
 
-// Retry B without rerunning semantic decisions or adding earlier inputs.
+// Retry B with plan-only inference; the subsequent check needs current understanding.
 export async function compileModel(
   semanticPlan: string,
+  narrative: string,
   runTurn: RunTurn,
   options: StageOptions = {},
 ): Promise<ModelingResult> {
   if (typeof semanticPlan !== 'string' || !semanticPlan.trim())
     throw new Error('请先完成建模说明。')
+  requireText(narrative, '业务说明')
+  const compiled = await compileReviewedPlan(
+    semanticPlan,
+    reviewModelClarifications(semanticPlan, narrative),
+    runTurn,
+    options,
+  )
+  return checkAndRepair(compiled, narrative, runTurn, options)
+}
+
+async function compileReviewedPlan(
+  semanticPlan: string,
+  review: ClarificationReview,
+  runTurn: RunTurn,
+  options: StageOptions,
+): Promise<Omit<ModelingResult, 'expressionReview'>> {
   if (semanticPlan.length > 120000)
     throw new Error('建模说明超过 12 万个字符，请先缩小建模范围。')
+  if (!modelingContent(semanticPlan).trim())
+    throw new Error('建模说明只有澄清问题，没有可整理的模型内容。')
   options.signal?.throwIfAborted()
   const report = options.onEvent || (() => {})
   report({ type: 'phase', part: 'compile', text: '正在整理候选模型。' })
   try {
-    const raw = await runTurn(
+    let raw = await runTurn(
       compileModelPrompt(semanticPlan),
       scopedTurn(options, 'compile'),
     )
     options.signal?.throwIfAborted()
+    const validate = (json: string) => {
+      try {
+        validateCompiledModel(json)
+        return { valid: true as const }
+      } catch (error) {
+        return {
+          valid: false as const,
+          error: error instanceof Error ? error.message : String(error),
+        }
+      }
+    }
+    const initialValidation = validate(raw)
+    const usePi =
+      options.runtime === 'pi' ||
+      (options.runtime === undefined &&
+        process.env.UOM_AGENT_RUNTIME === 'pi')
+    if (!initialValidation.valid && usePi) {
+      raw = await checkOrRepairCompiledJson(
+        semanticPlan,
+        raw,
+        options.provider || 'gpt',
+        initialValidation.error,
+        validate,
+        options,
+      )
+      options.signal?.throwIfAborted()
+    }
     // JSON 恢复（提取/截断修复）发生时明确告知用户，不把修复结果当完整结果展示。
     const { model, notices } = validateCompiledModelWithMeta(raw)
     const elements =
@@ -60,11 +124,12 @@ export async function compileModel(
       model.activities.length
     return {
       semanticPlan,
+      clarifications: review.clarifications,
       model,
       provenance: { basis: 'business-understanding', evidence: 'unlinked' },
       validation: {
         elements,
-        warnings: [...notices, '基于业务说明建模，尚未关联原文证据。'],
+        warnings: [...notices, ...review.warnings, '基于业务说明建模，尚未关联原文证据。'],
       },
     }
   } catch (error) {

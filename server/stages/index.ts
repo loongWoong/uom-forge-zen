@@ -11,7 +11,11 @@ export async function runStage(
   runTurn: RunTurn,
   options: StageOptions = {},
 ): Promise<AnalysisResult> {
-  const configured = { ...options, provider: request.provider }
+  const configured = {
+    ...options,
+    provider: request.provider,
+    runtime: request.runtime,
+  }
   switch (request.stage) {
     case 'understand':
       return readBusiness(request.document, runTurn, configured)
@@ -26,16 +30,15 @@ export async function runStage(
         configured,
       )
     case 'compile':
-      return compileModel(request.semanticPlan, runTurn, configured)
-    case 'narrate':
-      return narrateModel(request.model, runTurn, configured)
-    case 'assess':
-      return assessModel(
-        request.document,
+      return compileModel(
+        request.semanticPlan,
         request.narrative,
-        request.model,
         runTurn,
         configured,
       )
+    case 'narrate':
+      return narrateModel(request.model, runTurn, configured)
+    case 'assess':
+      return assessModel(request.model, runTurn, configured)
   }
 }

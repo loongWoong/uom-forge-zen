@@ -79,9 +79,9 @@ test('compile-stage recovery notices surface as validation warnings', () => {
         ],
       },
     ],
-    questions: [],
+    boundaries: [],
   }
-  // 去掉结尾的 “]}” 让根对象截断在 questions 数组处
+  // 去掉结尾的 “]}” 让根对象截断在 boundaries 数组处
   const truncated = JSON.stringify(model).slice(0, -2)
   const { model: parsed, notices } = validateCompiledModelWithMeta(truncated)
   assert.equal(parsed.objects[0].id, 'o1')

@@ -1,11 +1,12 @@
 import type { ProviderEvent, ProviderId } from '../../shared/analysis.ts'
 
 export interface TurnOptions {
+  outputFormat?: 'json'
   provider?: ProviderId
   signal?: AbortSignal
   onEvent?: (event: ProviderEvent) => void
   // Per-call model override; when absent each provider falls back to its
-  // environment default (LLM_MODEL / CODEX_MODEL).
+  // environment default (LLM_MODEL / GPT_MODEL).
   model?: string
 }
 // Each invocation receives only its explicit prompt, without session history.

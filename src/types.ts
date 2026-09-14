@@ -9,6 +9,7 @@ import type {
 } from '../shared/analysis.ts'
 import type { CandidateModel, Element } from '../shared/model.ts'
 import type { Revisions } from './workspace.ts'
+import type { ExpressionReview } from '../shared/expression.ts'
 
 export type AnalysisStage = AnalysisRequest['stage']
 export type WorkspacePage = 'document' | 'understanding' | 'model' | 'review'
@@ -27,6 +28,12 @@ export type ElementChanges = Pick<Element, 'name' | 'description'>
 export type DiscussionSubject = ElementChanges & { id?: string }
 export type QuestionAnswer = string | string[]
 export type QuestionAnswers = Record<number, QuestionAnswer>
+export interface ReviewedUnderstanding extends Understanding {
+  // Source reading and its question catalogue stay local for further revisions.
+  // Only the revised narrative is sent to downstream stages.
+  source: Understanding
+  confirmedAnswers: QuestionAnswers
+}
 export interface WorkspaceDocument extends BusinessDocument {
   content: string
   size: string
@@ -36,12 +43,15 @@ export interface SemanticPlan {
   plan: string
   complete: boolean
   compiled: boolean
+  warnings?: string[]
 }
 export interface CandidateDraft {
   model: CandidateModel
   revision: number
   documentRevision: number
   edited?: boolean
+  expressionReview?: ExpressionReview
+  historicalQuestions?: string[]
 }
 export interface WorkspaceMessage extends ChatMessage {
   id?: string
@@ -53,7 +63,7 @@ export type StageTiming = TurnTiming & { part?: StagePart }
 export interface Project {
   version: 4
   document: WorkspaceDocument
-  understanding: Understanding | null
+  understanding: ReviewedUnderstanding | null
   answers: QuestionAnswers
   questionsSaved: boolean
   feedback: string

@@ -3,6 +3,7 @@ import type {
   DiscussionRequest,
   DiscussionContext,
   ChatMessage,
+  AgentRuntimeId,
   ProviderId,
 } from '../../shared/analysis.ts'
 import { validateDocument, requireText } from './document.ts'
@@ -15,11 +16,17 @@ export function parseAnalysisRequest(
   defaultStage?: 'model',
 ): AnalysisRequest {
   if (!isRecord(input)) throw new Error('请求内容必须是 JSON 对象。')
+  const runtime = parseRuntime(input.runtime)
   const stage = input.stage ?? defaultStage
   switch (stage) {
     case 'understand':
       validateDocument(input.document)
-      return { provider, stage: 'understand', document: input.document }
+      return {
+        provider,
+        ...(runtime ? { runtime } : {}),
+        stage: 'understand',
+        document: input.document,
+      }
     case 'model': {
       requireText(input.narrative, '业务说明')
       if (
@@ -29,6 +36,7 @@ export function parseAnalysisRequest(
         throw new Error('建模反馈必须是文本。')
       return {
         provider,
+        ...(runtime ? { runtime } : {}),
         stage: 'model',
         narrative: input.narrative,
         model: input.model,
@@ -37,26 +45,37 @@ export function parseAnalysisRequest(
     }
     case 'compile':
       requireText(input.semanticPlan, '建模说明')
-      return { provider, stage: 'compile', semanticPlan: input.semanticPlan }
+      requireText(input.narrative, '业务说明')
+      return {
+        provider,
+        ...(runtime ? { runtime } : {}),
+        stage: 'compile',
+        semanticPlan: input.semanticPlan,
+        narrative: input.narrative,
+      }
     case 'narrate':
       return {
         provider,
+        ...(runtime ? { runtime } : {}),
         stage: 'narrate',
         model: parseCandidateModel(input.model),
       }
     case 'assess':
-      validateDocument(input.document)
-      requireText(input.narrative, '业务说明')
       return {
         provider,
+        ...(runtime ? { runtime } : {}),
         stage: 'assess',
-        document: input.document,
-        narrative: input.narrative,
         model: parseCandidateModel(input.model),
       }
     default:
       throw new Error('未知建模阶段。')
   }
+}
+
+function parseRuntime(value: unknown): AgentRuntimeId | undefined {
+  if (value === undefined) return undefined
+  if (value === 'direct' || value === 'pi') return value
+  throw new Error('未知 Agent 运行时。')
 }
 
 export function parseDiscussionRequest(

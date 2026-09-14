@@ -1,4 +1,5 @@
 import type { CandidateModel, Evidence } from './model.ts'
+import type { ExpressionReview } from './expression.ts'
 
 export interface BusinessDocument {
   name: string
@@ -8,25 +9,47 @@ export interface Question {
   text: string
   options: string[]
   multiple?: boolean
+  clarification?: ClarificationReason & { source: 'model' | 'assess' }
+}
+export interface ClarificationReason {
+  basis: string
+  ambiguity: string
+  impact: string
+}
+export interface BusinessClarification extends ClarificationReason {
+  text: string
+  options: string[]
+  multiple: boolean
 }
 export interface Understanding {
   narrative: string
   questions: Question[]
   warnings: string[]
 }
+export type SupportStatus = 'supported' | 'partial' | 'missing'
+export interface RequirementAssessment {
+  requirement: string
+  status: SupportStatus
+  elements: string[]
+  explanation: string
+  gap: string
+  suggestion: string
+  evidence: Evidence[]
+}
 export interface ProcessAssessment {
   processId: string
   processName: string
-  status: 'supported' | 'partial' | 'missing'
-  coveredElements: string[]
-  gaps: string[]
+  status: SupportStatus
+  reason: string
+  requirements: RequirementAssessment[]
   evidence: Evidence[]
 }
 export interface Assessment {
   summary: string
   processAssessments: ProcessAssessment[]
   recommendations: string[]
-  questions: string[]
+  clarifications: BusinessClarification[]
+  historicalQuestions?: string[]
 }
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -46,14 +69,28 @@ export interface ModelingInput {
 }
 export interface ModelingResult {
   semanticPlan: string
+  clarifications: BusinessClarification[]
   model: CandidateModel
+  expressionReview: ExpressionReview
   provenance: { basis: 'business-understanding'; evidence: 'unlinked' }
   validation: { elements: number; warnings: string[] }
 }
-export type ProviderId = 'codex' | 'deepseek'
+export type ProviderId = 'deepseek' | 'gpt'
+export const DEFAULT_PROVIDER: ProviderId = 'gpt'
+export const PROVIDERS: Record<ProviderId, { name: string; label: string }> = {
+  deepseek: { name: 'DeepSeek', label: 'DeepSeek API' },
+  gpt: { name: 'GPT', label: 'GPT API' },
+}
+export type AgentRuntimeId = 'direct' | 'pi'
+export const DEFAULT_RUNTIME: AgentRuntimeId = 'direct'
+export const RUNTIMES: Record<AgentRuntimeId, { name: string; label: string }> = {
+  direct: { name: '直接调用', label: '直接调用模型' },
+  pi: { name: 'Pi Agent', label: 'Pi Agent' },
+}
 export interface TurnTiming {
   callId: string
-  provider: ProviderId
+  // Retain the identity of historical ACP calls in saved drafts.
+  provider: ProviderId | 'codex'
   model: string
   reasoningEffort?: string
   startedAt: string
@@ -69,22 +106,33 @@ export type ProviderEvent =
   | { type: 'phase'; text: string }
   | { type: 'delta'; text: string; reasoning?: boolean; size?: number }
   | { type: 'timing'; timing: TurnTiming }
-export type StagePart = 'reading' | 'semantic' | 'compile'
+export type StagePart =
+  'reading' | 'semantic' | 'compile' | 'expression' | 'repair' | 'recheck'
 export type StageEvent =
   | (ProviderEvent & { part?: StagePart })
-  | { type: 'model-plan'; part: 'semantic'; semanticPlan: string }
+  | {
+      type: 'model-checkpoint'
+      model: CandidateModel
+      expressionReview: ExpressionReview
+    }
+  | {
+      type: 'model-plan'
+      part: 'semantic'
+      semanticPlan: string
+      clarifications: BusinessClarification[]
+      warnings: string[]
+    }
   | ({ type: 'understanding-narrative' } & Understanding)
-export type AnalysisRequest = { provider: ProviderId; modelOverride?: string } & (
+export type AnalysisRequest = {
+  provider: ProviderId
+  runtime?: AgentRuntimeId
+  modelOverride?: string
+} & (
   | { stage: 'understand'; document: BusinessDocument }
   | { stage: 'model'; narrative: string; model?: unknown; instruction?: string }
-  | { stage: 'compile'; semanticPlan: string }
+  | { stage: 'compile'; semanticPlan: string; narrative: string }
   | { stage: 'narrate'; model: CandidateModel }
-  | {
-      stage: 'assess'
-      document: BusinessDocument
-      narrative: string
-      model: CandidateModel
-    }
+  | { stage: 'assess'; model: CandidateModel }
 )
 export interface DiscussionRequest {
   provider: ProviderId
