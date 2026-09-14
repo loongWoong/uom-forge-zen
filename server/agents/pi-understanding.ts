@@ -1,10 +1,11 @@
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core'
-import { Type, type AssistantMessageEvent, type Model } from '@earendil-works/pi-ai'
-import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
+import { Type, type AssistantMessageEvent } from '@earendil-works/pi-ai'
 import type { BusinessDocument, ProviderId } from '../../shared/analysis.ts'
 import type { StageOptions } from '../stages/contracts.ts'
 import type { RunTurn } from '../providers/types.ts'
-import { piSignal } from './runtime.ts'
+import { resolveModelConfig } from '../providers/model-config.ts'
+import { createPiStreamFn, toPiModel } from './pi-model.ts'
+import { piModelError, piSignal } from './runtime.ts'
 
 const SECTION_NAMES = [
   '业务概述',
@@ -76,25 +77,6 @@ ${sourceBlocks.map((block) => `[${block.id}] ${block.text}`).join('\n')}`
     }))
 }
 
-function modelFor(provider: ProviderId, env: NodeJS.ProcessEnv, override?: string): Model<'openai-completions'> {
-  const model = override || (provider === 'gpt' ? env.GPT_MODEL || 'gpt-6-astra' : env.LLM_MODEL || 'deepseek-chat')
-  const endpoint = provider === 'gpt' ? env.GPT_API_URL : env.LLM_API_URL
-  if (!endpoint) throw new Error(`${provider === 'gpt' ? 'GPT' : 'DeepSeek'} 未配置 API URL。`)
-  const baseUrl = endpoint.replace(/\/chat\/completions\/?$/, '')
-  return {
-    id: model,
-    name: model,
-    api: 'openai-completions',
-    provider: provider === 'gpt' ? 'openai' : 'deepseek',
-    baseUrl,
-    reasoning: false,
-    input: ['text'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
-    maxTokens: 24000,
-  }
-}
-
 function textFromEvent(event: AssistantMessageEvent): string | undefined {
   return event.type === 'text_delta' ? event.delta : undefined
 }
@@ -113,12 +95,13 @@ export async function runPiUnderstanding(
   runTurn: RunTurn,
   options: StageOptions = {},
 ): Promise<string> {
-  const env = process.env
-  const deadline = piSignal(options, 'Pi 业务理解')
-  const model = modelFor(provider, env, options.model)
+  const config = resolveModelConfig(provider, { override: options.model })
+  const deadline = piSignal(options, 'Pi 业务理解', config.timeoutMs)
+  const model = toPiModel(config)
   let finished: string | undefined
   let checks = 0
   let turns = 0
+  let toolRuns = 0
   let coverageComplete = false
   let independentAttempts = 0
   let checkedNarrative = ''
@@ -203,12 +186,7 @@ export async function runPiUnderstanding(
       thinkingLevel: 'minimal',
       tools: [checkTool, finishTool],
     },
-    streamFn: (streamModel, context, streamOptions) =>
-      streamSimple(streamModel as Model<'openai-completions'>, context, {
-        ...streamOptions,
-        apiKey: provider === 'gpt' ? env.GPT_API_KEY : env.LLM_API_KEY,
-        maxTokens: 24000,
-      }),
+    streamFn: createPiStreamFn(config),
   })
   // Allow a repair/recheck pair after the independent critic. The previous
   // message-count guard could stop the agent before it reached submission on
@@ -219,6 +197,7 @@ export async function runPiUnderstanding(
   agent.subscribe((event) => {
     if (event.type === 'turn_start') turns += 1
     if (event.type === 'tool_execution_start') {
+      toolRuns += 1
       options.onEvent?.({
         type: 'phase',
         part: 'reading',
@@ -229,6 +208,15 @@ export async function runPiUnderstanding(
               ? 'Pi Agent 正在提交业务理解。'
               : `Pi Agent 正在执行 ${event.toolName}。`,
       })
+    }
+    if (event.type === 'message_end') {
+      if (event.message.role === 'assistant' && event.message.errorMessage)
+        options.onEvent?.({
+          type: 'phase',
+          part: 'reading',
+          text: `Pi Agent 模型调用失败：${event.message.errorMessage}`,
+        })
+      return
     }
     if (event.type !== 'message_update') return
     const delta = textFromEvent(event.assistantMessageEvent)
@@ -245,6 +233,8 @@ export async function runPiUnderstanding(
     deadline.dispose()
   }
   deadline.signal.throwIfAborted()
+  const failure = piModelError(agent, 'Pi 业务理解', toolRuns === 0)
+  if (failure) throw failure
   if (!finished?.trim()) throw new Error('Pi Agent 未提交业务理解。')
   return finished
 }

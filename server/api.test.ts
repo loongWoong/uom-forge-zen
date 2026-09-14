@@ -183,6 +183,7 @@ test('/api/config reports the effective provider and model without secrets', asy
   try {
     const saved = {
       UOM_LLM_PROVIDER: process.env.UOM_LLM_PROVIDER,
+      UOM_AGENT_RUNTIME: process.env.UOM_AGENT_RUNTIME,
       LLM_MODEL: process.env.LLM_MODEL,
       LLM_API_URL: process.env.LLM_API_URL,
       LLM_API_KEY: process.env.LLM_API_KEY,
@@ -191,6 +192,7 @@ test('/api/config reports the effective provider and model without secrets', asy
       GPT_MODEL: process.env.GPT_MODEL,
     }
     process.env.UOM_LLM_PROVIDER = 'deepseek'
+    process.env.UOM_AGENT_RUNTIME = 'pi'
     process.env.LLM_MODEL = 'qwen3.8-flash'
     process.env.LLM_API_URL = 'http://test.invalid/v1'
     process.env.LLM_API_KEY = 'k'
@@ -203,9 +205,11 @@ test('/api/config reports the effective provider and model without secrets', asy
       const body = (await response.json()) as {
         provider: string
         model: string
+        runtime?: string
         options: { value: string; model: string; ready: boolean }[]
       }
       assert.equal(body.provider, 'deepseek')
+      assert.equal(body.runtime, 'pi')
       assert.equal(body.model, 'qwen3.8-flash')
       assert.deepEqual(body.options, [
         { value: 'deepseek', model: 'qwen3.8-flash', ready: true },
@@ -273,6 +277,45 @@ test('/api/models proxies the endpoint model list and reports failures', async (
     else process.env.LLM_API_URL = saved.url
     if (saved.key === undefined) delete process.env.LLM_API_KEY
     else process.env.LLM_API_KEY = saved.key
+    await close(server)
+  }
+})
+
+test('/api/models reads the selected provider endpoint and rejects unknown providers', async () => {
+  const { server, url } = await serve(async () => '')
+  const listServer = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ data: [{ id: 'custom-gpt' }] }))
+  })
+  listServer.listen(0, '127.0.0.1')
+  await once(listServer, 'listening')
+  const address = listServer.address()
+  assert.ok(address && typeof address !== 'string')
+  const saved = {
+    GPT_API_URL: process.env.GPT_API_URL,
+    GPT_API_KEY: process.env.GPT_API_KEY,
+    LLM_API_URL: process.env.LLM_API_URL,
+    LLM_API_KEY: process.env.LLM_API_KEY,
+  }
+  process.env.GPT_API_URL = `http://127.0.0.1:${address.port}/v1`
+  process.env.GPT_API_KEY = 'k'
+  // The DeepSeek endpoint must not be consulted for a GPT request.
+  process.env.LLM_API_URL = 'http://127.0.0.1:9/v1'
+  process.env.LLM_API_KEY = 'k'
+  try {
+    const response = await fetch(url + '/api/models?provider=gpt')
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { models: ['custom-gpt'] })
+    assert.equal((await fetch(url + '/api/models?provider=codex')).status, 400)
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    listServer.closeAllConnections()
+    await new Promise<void>((resolve, reject) =>
+      listServer.close((error) => (error ? reject(error) : resolve())),
+    )
     await close(server)
   }
 })

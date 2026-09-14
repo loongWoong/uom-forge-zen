@@ -1,6 +1,7 @@
-import type { ProviderId } from '../../shared/analysis.ts'
-import { DEFAULT_PROVIDER } from '../../shared/analysis.ts'
+import type { AgentRuntimeId, ProviderId } from '../../shared/analysis.ts'
+import { DEFAULT_PROVIDER, PROVIDERS } from '../../shared/analysis.ts'
 import type { RunTurn } from './types.ts'
+import { normalizeEndpoint } from './model-config.ts'
 // ACP is disabled in the application; retain the adapter for manual experiments.
 // import { createCodexProvider } from './codex.ts'
 import { createDeepSeekProvider } from './deepseek.ts'
@@ -22,6 +23,8 @@ export function providerDescriptor(
 ): {
   provider: ProviderId
   model: string
+  /** Server default runtime, only when the operator set it explicitly. */
+  runtime?: AgentRuntimeId
   options: { value: ProviderId; model: string; ready: boolean }[]
 } {
   const deepseekReady = Boolean(env.LLM_API_URL && env.LLM_API_KEY)
@@ -29,9 +32,14 @@ export function providerDescriptor(
   const gptReady = Boolean(env.GPT_API_URL && env.GPT_API_KEY)
   const gptModel = env.GPT_MODEL || 'gpt-6-astra'
   const provider = resolveProvider(env.UOM_LLM_PROVIDER)
+  const runtime =
+    env.UOM_AGENT_RUNTIME === 'direct' || env.UOM_AGENT_RUNTIME === 'pi'
+      ? env.UOM_AGENT_RUNTIME
+      : undefined
   return {
     provider,
     model: provider === 'deepseek' ? deepseekModel : gptModel,
+    ...(runtime ? { runtime } : {}),
     options: [
       { value: 'deepseek', model: deepseekModel, ready: deepseekReady },
       { value: 'gpt', model: gptModel, ready: gptReady },
@@ -41,17 +49,21 @@ export function providerDescriptor(
 
 /**
  * Model ids offered by the configured OpenAI-compatible endpoint (GET /v1/models).
- * Throws with a readable message when the endpoint is unreachable so the UI can
- * fall back to free-text input.
+ * Each provider reads its own endpoint/key pair, so the GPT picker no longer
+ * proxies the DeepSeek endpoint. Throws with a readable message when the
+ * endpoint is unreachable so the UI can fall back to free-text input.
  */
 export async function listEndpointModels(
+  provider: ProviderId = 'deepseek',
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string[]> {
-  const configuredUrl = env.LLM_API_URL
-  const apiKey = env.LLM_API_KEY
+  const label = PROVIDERS[provider].name
+  const prefix = provider === 'gpt' ? 'GPT' : 'LLM'
+  const configuredUrl = provider === 'gpt' ? env.GPT_API_URL : env.LLM_API_URL
+  const apiKey = provider === 'gpt' ? env.GPT_API_KEY : env.LLM_API_KEY
   if (!configuredUrl || !apiKey)
-    throw new Error('DeepSeek 未配置 LLM_API_KEY 或 LLM_API_URL，无法获取模型列表。')
-  const baseUrl = configuredUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/i, '')
+    throw new Error(`${label} 未配置 ${prefix}_API_KEY 或 ${prefix}_API_URL，无法获取模型列表。`)
+  const baseUrl = normalizeEndpoint(configuredUrl)
   let response: Response
   try {
     response = await fetch(`${baseUrl}/models`, {

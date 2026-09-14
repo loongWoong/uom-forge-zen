@@ -15,6 +15,7 @@ import {
 } from '../../shared/clarifications.ts'
 import { runPiModeling } from '../agents/pi-modeling.ts'
 import { checkOrRepairCompiledJson } from '../agents/pi-compile.ts'
+import { withPiFallback } from './fallback.ts'
 
 export async function buildModel(
   input: ModelingInput,
@@ -30,9 +31,16 @@ export async function buildModel(
     text: '第二阶段 A：形成建模说明。',
   })
   const usePi = options.runtime === 'pi' || (options.runtime === undefined && process.env.UOM_AGENT_RUNTIME === 'pi')
+  const direct = () =>
+    runTurn(semanticModelPrompt(input), scopedTurn(options, 'semantic'))
   const semanticPlan = usePi
-    ? await runPiModeling(input, runTurn, options)
-    : await runTurn(semanticModelPrompt(input), scopedTurn(options, 'semantic'))
+    ? await withPiFallback(
+        options,
+        'semantic',
+        () => runPiModeling(input, runTurn, options),
+        direct,
+      )
+    : await direct()
   options.signal?.throwIfAborted()
   if (!semanticPlan.trim()) throw new Error('未返回建模说明。')
   const review = reviewModelClarifications(semanticPlan, input.narrative)

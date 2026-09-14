@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { AnalysisEvent } from '../shared/analysis.ts'
+import type { AnalysisEvent, ProviderId } from '../shared/analysis.ts'
 import { PROVIDERS } from '../shared/analysis.ts'
 import type { RunTurn } from './providers/types.ts'
 import { runProviderTurn, resolveProvider, providerDescriptor, listEndpointModels } from './providers/index.ts'
@@ -52,8 +52,22 @@ export function createApiMiddleware(runTurn: RunTurn = runProviderTurn) {
         return
       }
       response.setHeader('content-type', 'application/json; charset=utf-8')
+      // Provider-specific model list; defaults to the server's default provider.
+      const requested = new URL(request.url || '', 'http://localhost').searchParams.get(
+        'provider',
+      )
+      let provider: ProviderId
       try {
-        response.end(JSON.stringify({ models: await listEndpointModels() }))
+        provider = resolveProvider(requested ?? undefined)
+      } catch (error) {
+        response.statusCode = 400
+        response.end(JSON.stringify({ error: errorMessage(error) }))
+        return
+      }
+      try {
+        response.end(
+          JSON.stringify({ models: await listEndpointModels(provider) }),
+        )
       } catch (error) {
         response.statusCode = 502
         response.end(JSON.stringify({ error: errorMessage(error) }))

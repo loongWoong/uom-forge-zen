@@ -64,7 +64,9 @@ every call receives explicit stage inputs, without earlier conversation history.
 
 各次调用均可停止；B 失败时保留说明和旧模型，发送 `{ stage: 'compile', semanticPlan, narrative, provider }` 单独重试，无须重跑 A。B 仍只接收建模说明，narrative 用于后续检查。只有严格结构校验通过才更新图，不静默删除错误引用。候选页用“业务表达检查”展示检查与修正结果；本轮通过不代表已证明全部业务覆盖。检查超时或停止时，已完成候选仍可查看。页面不提供原始输出记录区域，业务理解、建模说明和模型自述继续在各自正文中流式显示；原始输出完整保留在本地草稿中用于诊断。运行进度、耗时及停止按钮在主区域可见，建模助手可收起并保留各阶段对话。
 
-Pi loop 使用 `UOM_PI_TIMEOUT_MS` 限制单个阶段的总时长（默认 300 秒），并与用户取消信号合并；达到轮数上限或超时不会伪造通过结果。
+Pi loop 使用 `UOM_PI_TIMEOUT_MS` 限制单个阶段的总时长，并与用户取消信号合并；未设置时跟随所选提供方的单次调用超时（`LLM_API_TIMEOUT_MS` / `GPT_API_TIMEOUT_MS`），不会在慢端点上比直接调用更早失败。达到轮数上限或超时不会伪造通过结果。
+
+模型配置只在一处解析（`server/providers/model-config.ts`）：请求的 `modelOverride`、提供方 env、端点、密钥、超时、输出上限和 `thinking`/`reasoning_effort` 同时供直接调用（`server/providers/`）和 Pi Agent（`server/agents/pi-model.ts`）使用，避免两条调用链参数漂移。Pi 请求与直接调用保持同一参数：DeepSeek 通道发送 `thinking: { type: "disabled" }`，GPT 通道发送 `reasoning_effort`，`max_tokens` 取提供方上限（`LLM_MAX_OUTPUT_TOKENS` / `GPT_MAX_OUTPUT_TOKENS`）。Pi 阶段失败时会把模型的真实错误（HTTP 状态与响应原因）上报给界面，不再只显示“Pi Agent 未提交…”。自定义/私有 OpenAI 兼容端点不支持 `stream_options`、`tools.strict`、`store` 等扩展时，可设 `UOM_PI_COMPAT=generic`，或用 `UOM_PI_STREAM_OPTIONS`、`UOM_PI_STRICT`、`UOM_PI_STORE`、`UOM_PI_MAX_TOKENS_FIELD`、`UOM_PI_MAX_TOKENS`、`UOM_PI_CONTEXT_WINDOW`、`UOM_PI_DISABLE_THINKING`、`UOM_PI_REASONING_EFFORT` 单项覆盖（完整说明见 `.env.example`）。设 `UOM_PI_FALLBACK=direct` 后，首轮即失败（尚未执行任何工具）的 Pi 阶段会用直接调用重跑一次并保留降级提示；默认关闭，错误原样上报。
 
 候选模型关系图按对象之间的联系自动排列，连线绕开卡片并标注方向。选中对象突出直接关系，可切换为只看相关对象；支持缩放、拖动画布、适应视图和展开查看。同类对象之间的多种关系共用回环路径，每条关系仍可独立选中；显示布局不改变模型语义。布局逻辑位于 `src/graph-layout.ts`，ELK 引擎按需加载，交互由 `src/components/ModelGraph.tsx` 实现。
 
@@ -129,7 +131,7 @@ Credentials are loaded from the project or parent UOM `.env` and remain server-s
 API URLs accept either a base URL ending in `/v1` or the full `/chat/completions` endpoint.
 The model switcher shows the model name the server reports via `GET /api/config`
 （只含提供方与模型名，不含密钥），也可直接 `curl http://127.0.0.1:5173/api/config` 自检；
-`GET /api/models` 代理 DeepSeek 兼容端点的模型列表，失败时退回手工输入模型 id。修改 `.env`
+`GET /api/models?provider=gpt` 按所选提供方的端点与密钥获取模型列表（默认提供方为服务端 `UOM_LLM_PROVIDER`），失败时退回手工输入模型 id。`GET /api/config` 在显式设置 `UOM_AGENT_RUNTIME` 时返回服务端默认运行时，页面据此初始化运行时选择。修改 `.env`
 后 Vite 会自动重启并重新加载，无需整进程重启。
 All DeepSeek calls explicitly disable thinking with `thinking: { type: "disabled" }`
 while retaining streaming output and the configured `LLM_MODEL`.

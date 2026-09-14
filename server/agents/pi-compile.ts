@@ -1,20 +1,14 @@
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core'
-import { Type, type Model } from '@earendil-works/pi-ai'
-import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
+import { Type } from '@earendil-works/pi-ai'
 import type { ProviderId } from '../../shared/analysis.ts'
 import type { StageOptions } from '../stages/contracts.ts'
-import { piSignal } from './runtime.ts'
+import { resolveModelConfig } from '../providers/model-config.ts'
+import { createPiStreamFn, toPiModel } from './pi-model.ts'
+import { piModelError, piSignal } from './runtime.ts'
 
 const jsonSchema = Type.Object({ json: Type.String({ description: '完整模型 JSON' }) })
 
 export type JsonValidation = { valid: true } | { valid: false; error: string }
-
-function modelFor(provider: ProviderId, env: NodeJS.ProcessEnv, override?: string): Model<'openai-completions'> {
-  const model = override || (provider === 'gpt' ? env.GPT_MODEL || 'gpt-6-astra' : env.LLM_MODEL || 'deepseek-chat')
-  const endpoint = provider === 'gpt' ? env.GPT_API_URL : env.LLM_API_URL
-  if (!endpoint) throw new Error(`${provider === 'gpt' ? 'GPT' : 'DeepSeek'} 未配置 API URL。`)
-  return { id: model, name: model, api: 'openai-completions', provider: provider === 'gpt' ? 'openai' : 'deepseek', baseUrl: endpoint.replace(/\/chat\/completions\/?$/, ''), reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 24000 }
-}
 
 /**
  * Pi is used here as a bounded semantic gate/repairer. It never gets to
@@ -28,10 +22,11 @@ export async function checkOrRepairCompiledJson(
   validate: (json: string) => JsonValidation,
   options: StageOptions = {},
 ): Promise<string> {
-  const env = process.env
-  const deadline = piSignal(options, 'Pi JSON 修复')
+  const config = resolveModelConfig(provider, { override: options.model })
+  const deadline = piSignal(options, 'Pi JSON 修复', config.timeoutMs)
   let result: string | undefined
   let turns = 0
+  let toolRuns = 0
   let last: JsonValidation = { valid: false, error: initialError }
   let lastJson = ''
   const validateTool: AgentTool<typeof jsonSchema> = {
@@ -59,16 +54,21 @@ export async function checkOrRepairCompiledJson(
   const agent = new Agent({
     initialState: {
       systemPrompt: '你是模型 JSON 修复 Agent。只修复程序报告的 JSON 语法、结构、ID 或引用错误，不重新设计业务，不增加、删除或改写建模说明中的业务语义。第一回合必须调用 validate_json；根据具体错误定点修复，再次校验；通过后立即调用 finish_json。最多修复两次，第四回合前必须提交；不要输出解释性长文。工具参数 json 必须是完整纯 JSON。',
-      model: modelFor(provider, env, options.model),
+      model: toPiModel(config),
       thinkingLevel: 'minimal',
       tools: [validateTool, finishTool],
     },
-    streamFn: (streamModel, context, streamOptions) => streamSimple(streamModel as Model<'openai-completions'>, context, { ...streamOptions, apiKey: provider === 'gpt' ? env.GPT_API_KEY : env.LLM_API_KEY, maxTokens: 24000 }),
+    streamFn: createPiStreamFn(config),
   })
   agent.shouldStopAfterTurn = () => turns >= 5
   agent.subscribe((event) => {
     if (event.type === 'turn_start') turns += 1
-    if (event.type === 'tool_execution_start') options.onEvent?.({ type: 'phase', part: 'compile', text: 'Pi Agent 正在检查模型 JSON。' })
+    if (event.type === 'tool_execution_start') {
+      toolRuns += 1
+      options.onEvent?.({ type: 'phase', part: 'compile', text: 'Pi Agent 正在检查模型 JSON。' })
+    }
+    if (event.type === 'message_end' && event.message.role === 'assistant' && event.message.errorMessage)
+      options.onEvent?.({ type: 'phase', part: 'compile', text: `Pi Agent 模型调用失败：${event.message.errorMessage}` })
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') options.onEvent?.({ type: 'delta', text: event.assistantMessageEvent.delta, size: event.assistantMessageEvent.delta.length })
   })
   const abort = () => agent.abort()
@@ -80,6 +80,8 @@ export async function checkOrRepairCompiledJson(
     deadline.dispose()
   }
   deadline.signal.throwIfAborted()
+  const failure = piModelError(agent, 'Pi JSON 修复', toolRuns === 0)
+  if (failure) throw failure
   if (!result?.trim()) throw new Error('Pi Agent 未提交模型 JSON。')
   return result
 }

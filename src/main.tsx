@@ -155,20 +155,27 @@ function App() {
     gpt: localStorage.getItem('uom-forge-model-gpt') || '',
   }))
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
-  const [availableModels, setAvailableModels] = useState<string[] | null>(null)
+  const [availableModels, setAvailableModels] = useState<
+    Record<ProviderId, string[] | null>
+  >({ deepseek: null, gpt: null })
   const [modelsError, setModelsError] = useState('')
   const [modelDraft, setModelDraft] = useState('')
   useEffect(() => {
     let cancelled = false
     fetch('/api/config')
       .then((response) => (response.ok ? response.json() : null))
-      .then((config: { options?: { value?: string; model?: string }[] } | null) => {
-        if (cancelled || !Array.isArray(config?.options)) return
-        const map: Record<ProviderId, string> = { deepseek: '', gpt: '' }
-        for (const option of config!.options!)
-          if (option.value === 'deepseek' || option.value === 'gpt')
-            map[option.value] = option.model || ''
-        setProviderModels(map)
+      .then((config: { options?: { value?: string; model?: string }[]; runtime?: string } | null) => {
+        if (cancelled) return
+        if (Array.isArray(config?.options)) {
+          const map: Record<ProviderId, string> = { deepseek: '', gpt: '' }
+          for (const option of config.options)
+            if (option.value === 'deepseek' || option.value === 'gpt')
+              map[option.value] = option.model || ''
+          setProviderModels(map)
+        }
+        // Server default runtime, only when the operator set UOM_AGENT_RUNTIME.
+        if (config?.runtime === 'direct' || config?.runtime === 'pi')
+          setRuntime(config.runtime)
       })
       .catch(() => {})
     return () => {
@@ -180,13 +187,16 @@ function App() {
     setModelDraft(modelOverride[provider] || providerModels[provider] || '')
     setModelsError('')
     setModelPickerOpen(true)
-    if (provider === 'deepseek' && availableModels === null)
-      fetch('/api/models')
+    if (availableModels[provider] === null)
+      fetch('/api/models?provider=' + provider)
         .then((response) =>
           response.ok ? response.json() : Promise.reject(new Error('HTTP ' + response.status)),
         )
         .then((data: { models?: string[] }) =>
-          setAvailableModels(Array.isArray(data.models) ? data.models : []),
+          setAvailableModels((current) => ({
+            ...current,
+            [provider]: Array.isArray(data.models) ? data.models : [],
+          })),
         )
         .catch((failure: Error) => setModelsError(failure.message))
   }
@@ -911,26 +921,24 @@ function App() {
                 {modelPickerOpen && (
                   <div className="model-popover" role="dialog" aria-label="切换模型">
                     <strong>{provider === 'deepseek' ? 'DeepSeek 模型' : 'GPT 模型'}</strong>
-                    {provider === 'deepseek' && (
-                      <div className="model-list">
-                        {availableModels === null && !modelsError && (
-                          <small>正在获取模型列表…</small>
-                        )}
-                        {modelsError && (
-                          <small className="model-error">{modelsError}，可直接输入模型 id。</small>
-                        )}
-                        {availableModels?.map((id) => (
-                          <button
-                            key={id}
-                            type="button"
-                            className={id === modelDraft ? 'active' : ''}
-                            onClick={() => setModelDraft(id)}
-                          >
-                            {id}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    <div className="model-list">
+                      {availableModels[provider] === null && !modelsError && (
+                        <small>正在获取模型列表…</small>
+                      )}
+                      {modelsError && (
+                        <small className="model-error">{modelsError}，可直接输入模型 id。</small>
+                      )}
+                      {availableModels[provider]?.map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={id === modelDraft ? 'active' : ''}
+                          onClick={() => setModelDraft(id)}
+                        >
+                          {id}
+                        </button>
+                      ))}
+                    </div>
                     <input
                       value={modelDraft}
                       onChange={(event) => setModelDraft(event.target.value)}

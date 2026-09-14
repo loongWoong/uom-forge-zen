@@ -1,21 +1,15 @@
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core'
-import { Type, type AssistantMessageEvent, type Model } from '@earendil-works/pi-ai'
-import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
+import { Type } from '@earendil-works/pi-ai'
 import type { ModelingInput, ProviderId } from '../../shared/analysis.ts'
 import type { RunTurn } from '../providers/types.ts'
 import type { StageOptions } from '../stages/contracts.ts'
 import { semanticModelPrompt } from '../stages/prompts.ts'
-import { piSignal } from './runtime.ts'
+import { resolveModelConfig } from '../providers/model-config.ts'
+import { createPiStreamFn, toPiModel } from './pi-model.ts'
+import { piModelError, piSignal } from './runtime.ts'
 
 const finishSchema = Type.Object({ semanticPlan: Type.String({ description: '完整建模说明 Markdown' }) })
 const checkSchema = Type.Object({ semanticPlan: Type.String({ description: '当前完整建模说明 Markdown' }) })
-
-function modelFor(provider: ProviderId, env: NodeJS.ProcessEnv, override?: string): Model<'openai-completions'> {
-  const model = override || (provider === 'gpt' ? env.GPT_MODEL || 'gpt-6-astra' : env.LLM_MODEL || 'deepseek-chat')
-  const endpoint = provider === 'gpt' ? env.GPT_API_URL : env.LLM_API_URL
-  if (!endpoint) throw new Error(`${provider === 'gpt' ? 'GPT' : 'DeepSeek'} 未配置 API URL。`)
-  return { id: model, name: model, api: 'openai-completions', provider: provider === 'gpt' ? 'openai' : 'deepseek', baseUrl: endpoint.replace(/\/chat\/completions\/?$/, ''), reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 24000 }
-}
 
 function parseResult(text: string): { checked?: unknown; gaps?: { id?: unknown; status?: unknown; note?: unknown }[] } {
   try { return JSON.parse(text) }
@@ -33,14 +27,15 @@ async function checkPlan(plan: string, narrative: string, runTurn: RunTurn, prov
 
 export async function runPiModeling(input: ModelingInput, runTurn: RunTurn, options: StageOptions = {}): Promise<string> {
   const provider = options.provider || 'gpt'
-  const env = process.env
-  const deadline = piSignal(options, 'Pi 语义建模')
-  const model = modelFor(provider, env, options.model)
+  const config = resolveModelConfig(provider, { override: options.model })
+  const deadline = piSignal(options, 'Pi 语义建模', config.timeoutMs)
+  const model = toPiModel(config)
   let finished: string | undefined
   let checked = ''
   let gaps: { id: string; status: string; note: string }[] = []
   let checks = 0
   let turns = 0
+  let toolRuns = 0
   let accepting = false
   const finishTool: AgentTool<typeof finishSchema> = { name: 'finish_modeling', label: '提交建模说明', description: '提交完整的候选建模说明；必须先通过独立检查。', parameters: finishSchema, execute: async (_id, args) => {
     if (checked !== args.semanticPlan) return { content: [{ type: 'text', text: '请先用当前文本调用 check_modeling。' }], isError: true, details: { accepted: false } }
@@ -57,11 +52,14 @@ export async function runPiModeling(input: ModelingInput, runTurn: RunTurn, opti
       : '候选模型已覆盖业务理解中的关键语义，请立即调用 finish_modeling。'
     return { content: [{ type: 'text', text }], details: { gaps, check: checks, submitNow: checks >= 2 || gaps.length === 0 } }
   } }
-  const agent = new Agent({ initialState: { systemPrompt: '你是业务本体建模 Agent。依据业务理解生成候选建模说明，不输出 JSON。先调用 check_modeling，再根据独立评估缺口增量修正；最多检查两次。第二次检查后无论是否仍有缺口，都必须立即调用 finish_modeling 提交当前完整建模说明，保留未决边界，不要继续检查。保持对象、关系、业务操作、只读能力、规则和完整业务过程的语义边界；不要因格式需要发明业务概念。', model, thinkingLevel: 'minimal', tools: [checkTool, finishTool] }, streamFn: (streamModel, context, streamOptions) => streamSimple(streamModel as Model<'openai-completions'>, context, { ...streamOptions, apiKey: provider === 'gpt' ? env.GPT_API_KEY : env.LLM_API_KEY, maxTokens: 24000 }) })
+  const agent = new Agent({ initialState: { systemPrompt: '你是业务本体建模 Agent。依据业务理解生成候选建模说明，不输出 JSON。先调用 check_modeling，再根据独立评估缺口增量修正；最多检查两次。第二次检查后无论是否仍有缺口，都必须立即调用 finish_modeling 提交当前完整建模说明，保留未决边界，不要继续检查。保持对象、关系、业务操作、只读能力、规则和完整业务过程的语义边界；不要因格式需要发明业务概念。', model, thinkingLevel: 'minimal', tools: [checkTool, finishTool] }, streamFn: createPiStreamFn(config) })
   agent.shouldStopAfterTurn = () => turns >= 6
-  agent.subscribe((event) => { if (event.type === 'turn_start') turns += 1; if (event.type === 'tool_execution_start') options.onEvent?.({ type: 'phase', part: 'semantic', text: event.toolName === 'check_modeling' ? 'Pi Agent 正在检查候选模型。' : event.toolName === 'finish_modeling' ? 'Pi Agent 正在提交建模说明。' : `Pi Agent 正在执行 ${event.toolName}。` }); if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') options.onEvent?.({ type: 'delta', text: event.assistantMessageEvent.delta, size: event.assistantMessageEvent.delta.length }) })
+  agent.subscribe((event) => { if (event.type === 'turn_start') turns += 1; if (event.type === 'tool_execution_start') { toolRuns += 1; options.onEvent?.({ type: 'phase', part: 'semantic', text: event.toolName === 'check_modeling' ? 'Pi Agent 正在检查候选模型。' : event.toolName === 'finish_modeling' ? 'Pi Agent 正在提交建模说明。' : `Pi Agent 正在执行 ${event.toolName}。` }) }; if (event.type === 'message_end' && event.message.role === 'assistant' && event.message.errorMessage) options.onEvent?.({ type: 'phase', part: 'semantic', text: `Pi Agent 模型调用失败：${event.message.errorMessage}` }); if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') options.onEvent?.({ type: 'delta', text: event.assistantMessageEvent.delta, size: event.assistantMessageEvent.delta.length }) })
   options.onEvent?.({ type: 'phase', part: 'semantic', text: 'Pi Agent 正在形成候选建模说明。' })
   const abort = () => agent.abort(); deadline.signal.addEventListener('abort', abort, { once: true })
   try { await agent.prompt(semanticModelPrompt(input)) } finally { deadline.signal.removeEventListener('abort', abort); deadline.dispose() }
-  deadline.signal.throwIfAborted(); if (!finished?.trim()) throw new Error('Pi Agent 未提交建模说明。'); return finished
+  deadline.signal.throwIfAborted()
+  const failure = piModelError(agent, 'Pi 语义建模', toolRuns === 0)
+  if (failure) throw failure
+  if (!finished?.trim()) throw new Error('Pi Agent 未提交建模说明。'); return finished
 }
