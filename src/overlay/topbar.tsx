@@ -22,6 +22,11 @@ import { projectTimestamp, type ProjectSummary } from './project-store.ts'
  */
 
 const PROVIDER_IDS: ProviderId[] = ['deepseek', 'gpt', 'qwen']
+const PROVIDER_BADGES: Record<ProviderId, string> = {
+  deepseek: 'DS',
+  gpt: 'GPT',
+  qwen: 'QW',
+}
 
 interface ProviderConfig {
   provider: ProviderId
@@ -222,7 +227,7 @@ function ModelPicker({ provider, busy }: { provider: ProviderId; busy: boolean }
 function ProviderBadge({ provider }: { provider: ProviderId }) {
   return (
     <span className="overlay-provider-badge" aria-hidden="true">
-      {PROVIDERS[provider].name.slice(0, 2)}
+      {PROVIDER_BADGES[provider]}
     </span>
   )
 }
