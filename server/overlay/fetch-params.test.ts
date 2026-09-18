@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { isChatCompletionsUrl, providerForUrl, rewriteChatBody } from './fetch-params.ts'
 import { resolveModelConfig, type ModelConfig } from './model-config.ts'
+import { inheritProviderEndpoints } from './provider-env.ts'
 
 const env: NodeJS.ProcessEnv = {
   LLM_API_URL: 'http://deepseek.invalid/v1',
@@ -81,6 +82,39 @@ test('GPT keeps reasoning effort and an explicit output cap when configured', ()
   rewriteChatBody(capped, explicit, { ...env, GPT_MAX_OUTPUT_TOKENS: '4096' })
   assert.equal(capped.max_tokens, 4096)
   assert.equal(capped.max_completion_tokens, undefined)
+})
+
+test('an inherited provider sends no vendor reasoning parameters', () => {
+  const shared: NodeJS.ProcessEnv = {
+    ...env,
+    LLM_API_URL: 'http://gw.test/v1',
+    LLM_API_KEY: 'k',
+    LLM_MODEL: 'gw-model',
+    GPT_API_URL: '',
+    GPT_API_KEY: '',
+    GPT_MODEL: '',
+  }
+  inheritProviderEndpoints(shared)
+  // Upstream's direct GPT client always sends reasoning_effort; the generic
+  // gateway must not receive it (nor the literal 'off' of the opt-out value).
+  const body: Record<string, unknown> = { model: 'x', reasoning_effort: 'medium' }
+  rewriteChatBody(body, resolveModelConfig('gpt', { env: shared }), shared)
+  assert.equal(body.model, 'gw-model')
+  assert.equal(body.reasoning_effort, undefined)
+  assert.deepEqual(body.thinking, { type: 'disabled' })
+})
+
+test('GPT_API_TIMEOUT_MS 未配置时继承 LLM_API_TIMEOUT_MS', () => {
+  const shared: NodeJS.ProcessEnv = {
+    ...env,
+    LLM_API_URL: 'http://gw.test/v1',
+    LLM_API_KEY: 'k',
+    LLM_API_TIMEOUT_MS: '900000',
+    GPT_API_URL: '',
+    GPT_API_KEY: '',
+  }
+  inheritProviderEndpoints(shared)
+  assert.equal(resolveModelConfig('gpt', { env: shared }).timeoutMs, 900000)
 })
 
 test('UOM_PI_COMPAT=generic strips vendor extensions and renames the token field', () => {

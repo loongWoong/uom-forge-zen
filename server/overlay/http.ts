@@ -13,6 +13,7 @@ import {
 } from './context.ts'
 import { documentLimitError } from './document-limit.ts'
 import { installFetchOverlay } from './fetch-overlay.ts'
+import { inheritProviderEndpoints } from './provider-env.ts'
 import { handleOverlayRoutes } from './routes.ts'
 import { createOverlayRunTurn } from './run-turn.ts'
 
@@ -38,6 +39,10 @@ export function createOverlayApiMiddleware(
   next: (error?: unknown) => void,
 ) => Promise<void> {
   installFetchOverlay()
+  // Providers without their own endpoint follow the generic OpenAI-compatible
+  // channel, so the model list and the turn agree on one baseURL. Idempotent:
+  // the Vite config already did this for the dev/build process.
+  inheritProviderEndpoints()
   const upstream = createApiMiddleware(createOverlayRunTurn(runTurn))
 
   return async (request, response, next) => {

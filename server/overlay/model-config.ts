@@ -1,6 +1,8 @@
 import type { OpenAICompletionsCompat } from '@earendil-works/pi-ai'
 import type { ProviderId } from '../../shared/analysis.ts'
+import { PROVIDERS } from '../../shared/analysis.ts'
 import { timeoutFromEnv } from '../providers/lifetime.ts'
+import { inheritedProviders } from './provider-env.ts'
 
 /**
  * Single source of truth for model configuration. Both runtimes resolve their
@@ -111,11 +113,45 @@ function credentialNames(provider: ProviderId): string {
   return `${prefix}_API_KEY 或 ${prefix}_API_URL`
 }
 
+/**
+ * Profile of the generic OpenAI-compatible channel. An inherited provider is
+ * that channel under another name, so it reuses these settings verbatim
+ * (thinking suppression, pi-ai compat, timeouts, output cap) and only differs
+ * by label and model id. Without the shared profile an inherited GPT/Qwen turn
+ * would send vendor parameters the generic gateway never sees from LLM_*.
+ */
+function genericProfile(env: NodeJS.ProcessEnv): ProviderProfile {
+  return {
+    label: PROVIDERS.deepseek.name,
+    apiKey: env.LLM_API_KEY,
+    url: env.LLM_API_URL,
+    model: env.LLM_MODEL || 'deepseek-chat',
+    timeoutEnv: env.LLM_API_TIMEOUT_MS,
+    maxOutputTokens: positiveInt(
+      env.LLM_MAX_OUTPUT_TOKENS,
+      'LLM_MAX_OUTPUT_TOKENS',
+      16384,
+    ),
+    disableThinking: true,
+    piProvider: 'deepseek',
+    compat: {},
+  }
+}
+
 /** Environment-backed defaults for one provider, read by both runtimes. */
 function providerProfile(
   provider: ProviderId,
   env: NodeJS.ProcessEnv,
 ): ProviderProfile {
+  if (provider !== 'deepseek' && inheritedProviders(env).includes(provider)) {
+    const prefix = provider === 'gpt' ? 'GPT' : 'QWEN'
+    const generic = genericProfile(env)
+    return {
+      ...generic,
+      label: PROVIDERS[provider].name,
+      model: env[`${prefix}_MODEL`]?.trim() || generic.model,
+    }
+  }
   if (provider === 'gpt')
     return {
       label: 'GPT',
@@ -150,21 +186,7 @@ function providerProfile(
       // the Pi adapter on the same shape for this OpenAI-compatible endpoint.
       compat: { supportsStore: false, maxTokensField: 'max_tokens' },
     }
-  return {
-    label: 'DeepSeek',
-    apiKey: env.LLM_API_KEY,
-    url: env.LLM_API_URL,
-    model: env.LLM_MODEL || 'deepseek-chat',
-    timeoutEnv: env.LLM_API_TIMEOUT_MS,
-    maxOutputTokens: positiveInt(
-      env.LLM_MAX_OUTPUT_TOKENS,
-      'LLM_MAX_OUTPUT_TOKENS',
-      16384,
-    ),
-    disableThinking: true,
-    piProvider: 'deepseek',
-    compat: {},
-  }
+  return genericProfile(env)
 }
 
 /** `UOM_PI_COMPAT=generic` switches off the vendor-specific extensions a minimal

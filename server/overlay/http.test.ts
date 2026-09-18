@@ -93,16 +93,22 @@ function streamOk(response: ServerResponse): void {
 const ENV_KEYS = [
   'UOM_LLM_PROVIDER',
   'UOM_AGENT_RUNTIME',
+  'UOM_PROVIDER_FALLBACK',
   'LLM_API_URL',
   'LLM_API_KEY',
   'LLM_MODEL',
+  'LLM_API_TIMEOUT_MS',
   'LLM_MAX_OUTPUT_TOKENS',
   'GPT_API_URL',
   'GPT_API_KEY',
   'GPT_MODEL',
+  'GPT_API_TIMEOUT_MS',
+  'GPT_MAX_OUTPUT_TOKENS',
   'QWEN_API_URL',
   'QWEN_API_KEY',
   'QWEN_MODEL',
+  'QWEN_API_TIMEOUT_MS',
+  'QWEN_MAX_OUTPUT_TOKENS',
   'UOM_MAX_DOC_CHARS',
   'UOM_PI_COMPAT',
 ] as const
@@ -141,14 +147,24 @@ test('/api/config reports the effective provider and model without secrets', asy
       provider: string
       model: string
       runtime?: string
-      options: { value: string; model: string; ready: boolean }[]
+      options: { value: string; model: string; ready: boolean; endpoint?: string }[]
     }
     assert.equal(body.provider, 'deepseek')
     assert.equal(body.runtime, 'pi')
     assert.equal(body.model, 'qwen3.8-flash')
     assert.deepEqual(body.options, [
-      { value: 'deepseek', model: 'qwen3.8-flash', ready: true },
-      { value: 'gpt', model: 'gpt-6-astra', ready: true },
+      {
+        value: 'deepseek',
+        model: 'qwen3.8-flash',
+        ready: true,
+        endpoint: 'http://test.invalid/v1',
+      },
+      {
+        value: 'gpt',
+        model: 'gpt-6-astra',
+        ready: true,
+        endpoint: 'http://test.invalid/v1',
+      },
       { value: 'qwen', model: 'Qwen3.6', ready: false },
     ])
     assert.equal((await fetch(url + '/api/config', { method: 'POST' })).status, 405)
@@ -172,7 +188,10 @@ test('/api/models reads the selected provider endpoint and reports failures', as
     process.env.LLM_API_KEY = 'sk-test'
     const ok = await fetch(url + '/api/models?provider=deepseek')
     assert.equal(ok.status, 200)
-    assert.deepEqual((await ok.json()) as unknown, { models: ['m1', 'm2'] })
+    assert.deepEqual((await ok.json()) as unknown, {
+      models: ['m1', 'm2'],
+      endpoint: endpoint.url,
+    })
 
     const unknown = await fetch(url + '/api/models?provider=nope')
     assert.equal(unknown.status, 400)
@@ -184,6 +203,50 @@ test('/api/models reads the selected provider endpoint and reports failures', as
   } finally {
     restoreEnv(saved)
     await close(server)
+    await endpoint.close()
+  }
+})
+
+test('a provider without its own endpoint lists the baseURL the turn uses', async () => {
+  const endpoint = await mockEndpoint((_body, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ object: 'list', data: [{ id: 'gw-model' }] }))
+  })
+  const saved = snapshotEnv()
+  let server: Server | undefined
+  try {
+    process.env.LLM_API_URL = endpoint.url
+    process.env.LLM_API_KEY = 'sk-test'
+    process.env.LLM_MODEL = 'gw-model'
+    for (const key of [
+      'GPT_API_URL',
+      'GPT_API_KEY',
+      'GPT_MODEL',
+      'QWEN_API_URL',
+      'QWEN_API_KEY',
+      'QWEN_MODEL',
+      'UOM_PROVIDER_FALLBACK',
+    ])
+      delete process.env[key]
+    // The alias is applied when the overlay middleware is created, i.e. at startup.
+    const served = await serve(async () => '')
+    server = served.server
+    const listed = await fetch(served.url + '/api/models?provider=gpt')
+    assert.equal(listed.status, 200)
+    assert.deepEqual((await listed.json()) as unknown, {
+      models: ['gw-model'],
+      endpoint: endpoint.url,
+    })
+    const config = (await (await fetch(served.url + '/api/config')).json()) as {
+      options: { value: string; model: string; ready: boolean; endpoint?: string }[]
+    }
+    assert.deepEqual(
+      config.options.find((option) => option.value === 'gpt'),
+      { value: 'gpt', model: 'gw-model', ready: true, endpoint: endpoint.url },
+    )
+  } finally {
+    restoreEnv(saved)
+    if (server) await close(server)
     await endpoint.close()
   }
 })

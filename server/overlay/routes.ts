@@ -10,6 +10,33 @@ import { normalizeEndpoint } from './model-config.ts'
  * offer the endpoint's model list without any upstream route or type change.
  */
 
+/**
+ * Endpoint shown to the browser: normalized, and never carrying credentials
+ * that an operator may have embedded in the URL.
+ */
+function publicEndpoint(value?: string): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed) return undefined
+  const normalized = normalizeEndpoint(trimmed)
+  try {
+    const parsed = new URL(normalized)
+    if (!parsed.username && !parsed.password) return normalized
+    parsed.username = ''
+    parsed.password = ''
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return normalized
+  }
+}
+
+interface ProviderOption {
+  value: ProviderId
+  model: string
+  ready: boolean
+  /** Base URL this provider will call; exposes no key material. */
+  endpoint?: string
+}
+
 /** Read-only provider/model descriptor for /api/config; never includes secrets. */
 export function providerDescriptor(
   env: NodeJS.ProcessEnv = process.env,
@@ -18,7 +45,7 @@ export function providerDescriptor(
   model: string
   /** Server default runtime, only when the operator set it explicitly. */
   runtime?: AgentRuntimeId
-  options: { value: ProviderId; model: string; ready: boolean }[]
+  options: ProviderOption[]
 } {
   const deepseekReady = Boolean(env.LLM_API_URL && env.LLM_API_KEY)
   const deepseekModel = env.LLM_MODEL || 'deepseek-chat'
@@ -32,6 +59,21 @@ export function providerDescriptor(
     gpt: gptModel,
     qwen: qwenModel,
   }
+  const endpoints: Record<ProviderId, string | undefined> = {
+    deepseek: publicEndpoint(env.LLM_API_URL),
+    gpt: publicEndpoint(env.GPT_API_URL),
+    qwen: publicEndpoint(env.QWEN_API_URL),
+  }
+  const option = (
+    value: ProviderId,
+    model: string,
+    ready: boolean,
+  ): ProviderOption => ({
+    value,
+    model,
+    ready,
+    ...(endpoints[value] ? { endpoint: endpoints[value] } : {}),
+  })
   const runtime =
     env.UOM_AGENT_RUNTIME === 'direct' || env.UOM_AGENT_RUNTIME === 'pi'
       ? env.UOM_AGENT_RUNTIME
@@ -41,23 +83,26 @@ export function providerDescriptor(
     model: models[provider],
     ...(runtime ? { runtime } : {}),
     options: [
-      { value: 'deepseek', model: deepseekModel, ready: deepseekReady },
-      { value: 'gpt', model: gptModel, ready: gptReady },
-      { value: 'qwen', model: qwenModel, ready: qwenReady },
+      option('deepseek', deepseekModel, deepseekReady),
+      option('gpt', gptModel, gptReady),
+      option('qwen', qwenModel, qwenReady),
     ],
   }
 }
 
 /**
- * Model ids offered by the configured OpenAI-compatible endpoint (GET /v1/models).
- * Each provider reads its own endpoint/key pair, so the picker never proxies
- * another provider's endpoint. Throws with a readable message when the endpoint
- * is unreachable so the UI can fall back to free-text input.
+ * Model ids offered by the endpoint this provider will actually call
+ * (GET <baseUrl>/models). The endpoint is resolved the same way the requests
+ * resolve it, so the picker can never list a different baseURL than the one the
+ * turn uses; a provider without its own endpoint follows the generic LLM_*
+ * channel (see `provider-env.ts`) when that channel is configured. Throws with a
+ * readable message when the endpoint is unreachable so the UI can fall back to
+ * free-text input.
  */
 export async function listEndpointModels(
   provider: ProviderId = 'deepseek',
   env: NodeJS.ProcessEnv = process.env,
-): Promise<string[]> {
+): Promise<{ models: string[]; endpoint: string }> {
   const label = PROVIDERS[provider].name
   const credentials: Record<
     ProviderId,
@@ -73,6 +118,7 @@ export async function listEndpointModels(
       `${label} 未配置 ${prefix}_API_KEY 或 ${prefix}_API_URL，无法获取模型列表。`,
     )
   const baseUrl = normalizeEndpoint(configuredUrl)
+  const endpoint = publicEndpoint(configuredUrl) as string
   let response: Response
   try {
     response = await fetch(`${baseUrl}/models`, {
@@ -94,7 +140,7 @@ export async function listEndpointModels(
         : '',
     )
     .filter(Boolean)
-  return [...new Set(ids)]
+  return { models: [...new Set(ids)], endpoint }
 }
 
 /**
@@ -142,7 +188,7 @@ export async function handleOverlayRoutes(
       return true
     }
     try {
-      response.end(JSON.stringify({ models: await listEndpointModels(provider) }))
+      response.end(JSON.stringify(await listEndpointModels(provider)))
     } catch (error) {
       response.statusCode = 502
       response.end(

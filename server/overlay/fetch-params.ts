@@ -82,6 +82,11 @@ export function rewriteChatBody(
   } else if (config.pi.reasoningEffort !== undefined) {
     body.reasoning_effort = config.pi.reasoningEffort
     delete body.thinking
+  } else {
+    // The operator asked for no reasoning parameters (X_REASONING_EFFORT=off),
+    // or the provider follows the generic channel: drop what upstream sent
+    // instead of forwarding a vendor flag a minimal gateway may reject.
+    delete body.reasoning_effort
   }
   // A minimal gateway must not receive vendor reasoning extensions at all.
   if (generic) {

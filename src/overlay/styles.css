@@ -116,6 +116,14 @@
   font-size: 11px;
   line-height: 1.6;
 }
+.model-source {
+  display: block;
+  margin: -4px 0 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: #8a96a6;
+  overflow-wrap: anywhere;
+}
 .model-error {
   color: #a05951;
 }

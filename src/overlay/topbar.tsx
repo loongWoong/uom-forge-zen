@@ -11,6 +11,7 @@ import {
   withSuppressedMirror,
   writeActiveProjectId,
 } from './storage-sync.ts'
+import { fetchEndpointModels } from './model-list.ts'
 import { modelOverrideFor, writeModelOverride } from './request-override.ts'
 import { projectTimestamp, type ProjectSummary } from './project-store.ts'
 
@@ -32,7 +33,7 @@ interface ProviderConfig {
   provider: ProviderId
   model: string
   runtime?: string
-  options: { value: ProviderId; model: string; ready: boolean }[]
+  options: { value: ProviderId; model: string; ready: boolean; endpoint?: string }[]
 }
 
 interface Selection {
@@ -91,6 +92,7 @@ function ModelPicker({ provider, busy }: { provider: ProviderId; busy: boolean }
   const [open, setOpen] = useState(false)
   const [override, setOverride] = useState(() => modelOverrideFor(provider))
   const [models, setModels] = useState<Partial<Record<ProviderId, string[] | null>>>({})
+  const [endpoints, setEndpoints] = useState<Partial<Record<ProviderId, string>>>({})
   const [error, setError] = useState('')
   const [draft, setDraft] = useState('')
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -123,27 +125,28 @@ function ModelPicker({ provider, busy }: { provider: ProviderId; busy: boolean }
     return () => document.removeEventListener('mousedown', onPointerDown)
   }, [open])
 
-  const defaultModel =
-    config?.options.find((option) => option.value === provider)?.model || ''
-  const effective = override || defaultModel || '模型'
+  const option = config?.options.find((item) => item.value === provider)
+  const defaultModel = option?.model || ''
+  // A provider without credentials has no model to show: naming a placeholder
+  // would suggest a model the endpoint does not serve.
+  const effective = override || (option?.ready === false ? '未配置' : defaultModel || '模型')
+  // The baseURL the picker's list came from (or will come from).
+  const endpoint = endpoints[provider] || option?.endpoint || ''
 
   const openPicker = () => {
     setDraft(override || defaultModel)
     setError('')
     setOpen(true)
     if (models[provider] === undefined)
-      fetch('/api/models?provider=' + provider)
-        .then((response) =>
-          response.ok
-            ? response.json()
-            : Promise.reject(new Error('HTTP ' + response.status)),
-        )
-        .then((data: { models?: string[] }) =>
+      fetchEndpointModels(provider)
+        .then((data) => {
           setModels((current) => ({
             ...current,
-            [provider]: Array.isArray(data.models) ? data.models : [],
-          })),
-        )
+            [provider]: data.models,
+          }))
+          if (data.endpoint)
+            setEndpoints((current) => ({ ...current, [provider]: data.endpoint as string }))
+        })
         .catch((failure: Error) => setError(failure.message))
   }
 
@@ -172,6 +175,11 @@ function ModelPicker({ provider, busy }: { provider: ProviderId; busy: boolean }
       {open && (
         <div className="model-popover" role="dialog" aria-label="切换模型">
           <strong>{PROVIDERS[provider].name} 模型</strong>
+          {endpoint && (
+            <small className="model-source" title="模型列表来源">
+              列表来自 {endpoint}/models
+            </small>
+          )}
           <div className="model-list">
             {models[provider] === undefined && !error && (
               <small>正在获取模型列表…</small>

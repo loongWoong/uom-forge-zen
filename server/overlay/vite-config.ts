@@ -9,13 +9,15 @@ import {
   type UserConfig,
 } from 'vite'
 import { createOverlayApiMiddleware } from './http.ts'
+import { inheritProviderEndpoints } from './provider-env.ts'
 
 /**
  * Overlay Vite configuration.
  *
  * It composes the pristine upstream config instead of forking it:
  *  1. `.env` loading that also reads the parent UOM directory and clears
- *     previously injected keys so edits apply on config reload;
+ *     previously injected keys so edits apply on config reload; providers
+ *     without their own endpoint follow the generic LLM_* channel;
  *  2. the overlay API middleware, mounted *before* upstream's so it can add
  *     routes and decorate requests/responses;
  *  3. an extra client entry (`/src/overlay/main.tsx`) injected into the HTML
@@ -36,9 +38,14 @@ const projectRoot = path.resolve(import.meta.dirname, '../..')
 // are tracked and cleared first, so editing .env takes effect without a full
 // process restart; real environment variables are never tracked and always win.
 const injectedFromFiles = new Set<string>()
+// Variables the provider fallback copied; cleared before every reload so a
+// removed LLM_* value cannot keep a stale alias alive.
+const inheritedKeys = new Set<string>()
 function loadDotEnvDirectories(directories: string[], mode: string): void {
   for (const key of injectedFromFiles) delete process.env[key]
   injectedFromFiles.clear()
+  for (const key of inheritedKeys) delete process.env[key]
+  inheritedKeys.clear()
   for (const dir of directories) {
     for (const [key, value] of Object.entries(loadEnv(mode, dir, ''))) {
       if (process.env[key] === undefined) {
@@ -47,6 +54,12 @@ function loadDotEnvDirectories(directories: string[], mode: string): void {
       }
     }
   }
+  const inherited = inheritProviderEndpoints()
+  for (const key of inherited.keys) inheritedKeys.add(key)
+  if (inherited.providers.length > 0)
+    console.log(
+      `[overlay] ${inherited.providers.join('/')} 未配置独立端点，已复用 LLM_* 通用通道：${inherited.keys.join(', ')}（用 UOM_PROVIDER_FALLBACK=off 关闭）`,
+    )
 }
 loadDotEnvDirectories(
   [projectRoot, path.resolve(projectRoot, '..')],

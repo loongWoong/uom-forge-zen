@@ -61,13 +61,14 @@ tools/
 | 本地功能 | 装饰方式 |
 | --- | --- |
 | `.env` 加载（项目根 + 上级 UOM 目录；改 .env 后配置热加载） | `server/overlay/vite-config.ts` 先加载环境，再动态 `import('../../vite.config.ts')` 组合 |
-| `/api/config`、`/api/models` 路由 | overlay middleware 注册在上游 API plugin 之前；命中即响应，其余 `next()` 委托 |
+| 单网关部署下 GPT/Qwen 复用通用通道 | `provider-env.ts` 在启动时把未配置的 `GPT_*`/`QWEN_*` 从 `LLM_*` 补齐（URL/KEY/MODEL/超时/输出上限），使模型列表与请求命中同一个 baseURL；显式配置优先，`UOM_PROVIDER_FALLBACK=off` 关闭 |
+| `/api/config`、`/api/models` 路由 | overlay middleware 注册在上游 API plugin 之前；命中即响应，其余 `next()` 委托；`/api/models` 返回 `{models, endpoint}`，把列表来源的 baseURL 暴露给界面 |
 | `modelOverride`（每次请求切换模型） | `http.ts` 缓冲请求体 → 校验 → 存入 AsyncLocalStorage；`fetch-overlay.ts` 在发出的请求体里改写 `model` |
 | direct 与 Pi 运行时参数统一（`max_tokens`、DeepSeek `thinking`、GPT `reasoning_effort`、`UOM_PI_COMPAT` 兼容开关） | 同一 fetch 装饰（两条链路最终都走 HTTP），配置来自 `model-config.ts` |
 | Pi provider 报错不再被"未通过提交工具交接…"掩盖 | fetch 装饰捕获非 2xx 响应体 → `http.ts` 重写 error 事件 / error JSON |
 | JSON 恢复（截断、前后规划文字、非法尾逗号）+ 恢复提示 | `run-turn.ts` 包装注入的 `RunTurn`；提示经响应装饰追加到 `validation.warnings` / `understanding.warnings` |
 | `UOM_MAX_DOC_CHARS` | `document-limit.ts` 在委托上游前显式拒绝超限请求（不截断正文） |
-| 顶栏模型选择器 | `transformIndexHtml` 注入 `/src/overlay/main.tsx`（在应用入口之前执行）；React 挂载到 `.topbar-actions`；`window.fetch` 装饰注入 `modelOverride` |
+| 顶栏模型选择器 | `transformIndexHtml` 注入 `/src/overlay/main.tsx`（在应用入口之前执行）；React 挂载到 `.topbar-actions`；`window.fetch` 装饰注入 `modelOverride`；`model-list.ts` 拉取列表并显示来源 baseURL，失败时展示服务端原因而非 `HTTP 502` |
 | 项目库（保存/切换/新建不丢草稿） | `Storage.prototype.setItem` 装饰：上游每次自动保存草稿时同步项目库；UI 写 `uom-forge-project-v3` + `uom-forge-active-project-v1` 后刷新页面 |
 | 证据阅读子模块缺失时降级 | overlay 配置在子模块不可解析时加 `qq-doc-clone` alias |
 | Windows 上 Codex ACP 清理 EBUSY（上游缺陷） | `tools/fs-compat.mjs` 通过 `.npmrc` 的 `node-options` 预加载，给 `fs.rm`/`fs.promises.rm` 加重试；`syncBuiltinESMExports()` 让上游 `import { rm } from 'node:fs/promises'` 生效 |
@@ -106,6 +107,9 @@ node tools/build-npmrc.mjs
   `scripts/compare-reasoning.ts` 的手动实验。
 - **项目切换依赖上游 800ms 自动保存**：overlay 在"新建/切换/保存到项目库"前会先
   点击上游的保存按钮刷新草稿，正常情况下不会丢最后几毫秒的编辑。
+- **GPT/Qwen 端点的回退只影响环境变量**：`provider-env.ts` 只填空值；若某提供方
+  只配了一半（例如只有 key 没有 URL），overlay 不会补另一半，该提供方继续报自己的
+  "未配置"错误，以免把请求发到错误的端点。
 
 ## 上游更新流程
 
