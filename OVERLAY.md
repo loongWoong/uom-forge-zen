@@ -1,7 +1,8 @@
 # Overlay：不修改上游源码的本地扩展
 
 本仓库相对上游的全部本地改动集中在 `server/overlay/`、`src/overlay/`、`tools/`、
-`vite.overlay.config.ts` 与 `OVERLAY.md`；上游文件保持逐字节一致，因此
+`vite.overlay.config.ts`、`AGENTS.md`（Agent 硬性规范，pi 等代理自动读取）与
+`OVERLAY.md`；上游文件保持逐字节一致，因此
 `git merge origin/main` 不会产生任何冲突。本地功能全部通过"装饰器"（组合、注入、
 包装、监听）挂接在上游的接缝上。此外还有三类原本就只存在于本地的文件
 （上游没有、也不会与之冲突）：`.env.example`、中文分析文档（`*分析.md/.html`）、
