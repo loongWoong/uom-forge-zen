@@ -5,10 +5,11 @@
  * `git merge origin/main` has nothing to conflict on. This tool makes that an
  * explicit, verified workflow:
  *
- *   1. verifies `.npmrc` still matches tools/fs-compat.mjs;
- *   2. fetches and refuses to merge when a locally modified file exists in the
- *      upstream tree (that is exactly the state that produces conflicts);
- *   3. merges, reinstalls dependencies when the lockfile changed, and runs the
+ *   1. fetches, then refuses to merge when a file we changed since the merge
+ *      base also exists in the incoming upstream tree (that is exactly the
+ *      state that produces conflicts), or when an untracked local file has the
+ *      same path as a newly added upstream one;
+ *   2. merges, reinstalls dependencies when the lockfile changed, and runs the
  *      verification suite (`--no-verify` skips it, `--build` adds a build).
  *
  *   node tools/pull-upstream.mjs [--no-verify] [--build]
@@ -31,12 +32,30 @@ const run = (command, commandArgs) => {
 
 const step = (message) => console.log(`\n== ${message}`)
 
-try {
-  step('.npmrc 与 tools/fs-compat.mjs 同步检查')
-  run(process.execPath, ['tools/build-npmrc.mjs', '--check'])
+/**
+ * Does an untracked working-tree file already match the upstream blob?
+ * `--path` makes hash-object apply the same clean filters (core.autocrlf) git
+ * would apply on add, so CRLF checkouts do not look like a difference.
+ */
+function identicalToUpstream(file, ref) {
+  try {
+    return (
+      capture('git', ['hash-object', `--path=${file}`, file]) ===
+      capture('git', ['rev-parse', `${ref}:${file}`])
+    )
+  } catch {
+    return false
+  }
+}
 
+try {
   step('获取远端更新')
-  run('git', ['fetch', 'origin', '--prune'])
+  try {
+    run('git', ['fetch', 'origin', '--prune'])
+  } catch {
+    // Offline / no credentials must not block merging a ref we already have.
+    console.warn('git fetch 失败，继续使用本地已有的远端引用。')
+  }
 
   let upstreamRef = 'origin/main'
   try {
@@ -48,18 +67,35 @@ try {
   const upstreamPaths = new Set(
     capture('git', ['ls-tree', '-r', '--name-only', upstreamRef]).split('\n').filter(Boolean),
   )
+  // Compare against the merge base, never against the upstream tip: after a
+  // fetch, `git diff <upstream> HEAD` also lists the files *upstream* changed,
+  // and those are exactly what a conflict-free merge is supposed to bring in.
+  const mergeBase = capture('git', ['merge-base', 'HEAD', upstreamRef])
   const differing = new Set([
-    ...capture('git', ['diff', '--name-only', upstreamRef, 'HEAD'])
+    // 自共同祖先以来，本地已提交的改动
+    ...capture('git', ['diff', '--name-only', mergeBase, 'HEAD'])
       .split('\n')
       .filter(Boolean),
     // 未提交的改动同样会让合并冲突，必须一起检查
-    ...capture('git', ['diff', '--name-only', upstreamRef])
+    ...capture('git', ['diff', '--name-only', 'HEAD'])
       .split('\n')
       .filter(Boolean),
   ])
+  // Untracked local files that upstream also ships: git refuses to overwrite
+  // them, so the merge stops even though nothing is “modified” locally.
+  const untrackedClash = capture('git', ['ls-files', '--others', '--exclude-standard'])
+    .split('\n')
+    .filter((file) => upstreamPaths.has(file))
+    .filter((file) => !identicalToUpstream(file, upstreamRef))
+  if (untrackedClash.length) {
+    console.error('\n以下未跟踪的本地文件与上游新增文件同名，合并会被 git 拒绝：')
+    for (const file of untrackedClash) console.error(`  - ${file}`)
+    console.error('请先确认它是否应转为 overlay 路径（或提交/删除）后重试。')
+    process.exit(1)
+  }
   const violations = [...differing].filter((file) => upstreamPaths.has(file))
   if (violations.length) {
-    console.error('\n以下上游文件在本地被修改过，合并会产生冲突：')
+    console.error('\n以下上游文件自共同祖先以来被本地修改过，合并会产生冲突：')
     for (const file of violations) console.error(`  - ${file}`)
     console.error(
       '\n请把这些改动迁移到 overlay（server/overlay、src/overlay、tools、overlay 文档），' +
@@ -101,8 +137,8 @@ try {
   if (!skipVerify) {
     step('类型检查')
     run('npm', ['run', 'typecheck'])
-    step('测试')
-    run('npm', ['test'])
+    step('测试（overlay 入口：带上 tools/fs-compat.mjs 的 Windows 重试）')
+    run(process.execPath, ['tools/overlay.mjs', 'test'])
     if (withBuild) {
       step('构建（overlay 配置）')
       run(process.execPath, ['tools/overlay.mjs', 'build'])

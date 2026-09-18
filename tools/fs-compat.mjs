@@ -1,5 +1,6 @@
 /**
- * Windows filesystem compatibility shim (loaded via `.npmrc` `node-options`).
+ * Windows filesystem compatibility shim (preloaded by `tools/overlay.mjs`
+ * through NODE_OPTIONS, so test-runner child processes inherit it).
  *
  * Upstream's ACP provider kills its child process and immediately removes the
  * temporary working directory. On Windows the killed child still holds a
@@ -13,7 +14,10 @@
  * upstream while still giving Node's ESM import of `node:fs/promises` the
  * retrying implementation (`syncBuiltinESMExports` refreshes the bindings).
  *
- * This file is local-only and has no effect on non-Windows platforms.
+ * This file is local-only and has no effect on non-Windows platforms. Plain
+ * `npm test` is upstream's command and runs without this shim — use
+ * `node tools/overlay.mjs test` (same patterns, shim preloaded) when the ACP
+ * cleanup tests misfire with EBUSY.
  */
 import fs from 'node:fs'
 import fsPromises from 'node:fs/promises'

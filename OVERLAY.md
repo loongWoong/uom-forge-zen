@@ -1,11 +1,14 @@
 # Overlay：不修改上游源码的本地扩展
 
 本仓库相对上游的全部本地改动集中在 `server/overlay/`、`src/overlay/`、`tools/`、
-`vite.overlay.config.ts`、`.npmrc` 与 `OVERLAY.md`；上游文件保持逐字节一致，因此
+`vite.overlay.config.ts` 与 `OVERLAY.md`；上游文件保持逐字节一致，因此
 `git merge origin/main` 不会产生任何冲突。本地功能全部通过"装饰器"（组合、注入、
 包装、监听）挂接在上游的接缝上。此外还有三类原本就只存在于本地的文件
 （上游没有、也不会与之冲突）：`.env.example`、中文分析文档（`*分析.md/.html`）、
 `src/components/evidence/evidence-reader-fallback.jsx`。
+
+> 曾经也放在本地的 `.npmrc` 已让位给上游（上游用它固定 `install-links=false`），
+> Windows 的 `fs.rm` 重试改由 `tools/overlay.mjs` 注入，见下文。
 
 ## 快速开始
 
@@ -19,6 +22,9 @@ npm run dev
 # 生产构建 / 预览（overlay 配置）
 node tools/overlay.mjs build
 node tools/overlay.mjs preview
+
+# 测试：npm test 是上游纯版本；下面这条同模式但预加载了 Windows fs.rm 重试
+node tools/overlay.mjs test
 
 # 拉取上游更新（无冲突工作流）
 node tools/pull-upstream.mjs              # fetch + 守卫 + merge + typecheck + test
@@ -49,11 +55,9 @@ src/overlay/
   project-store.ts            命名项目库（localStorage）
   styles.css                  overlay 样式
 tools/
-  overlay.mjs                 用 overlay 配置运行 vite
+  overlay.mjs                 用 overlay 配置运行 vite；也提供带 fs 兼容 shim 的 test 入口
   pull-upstream.mjs           无冲突拉取工作流 + 上游文件清洁守卫
-  fs-compat.mjs               Windows EBUSY 重试（见下）
-  build-npmrc.mjs             由 fs-compat.mjs 生成 .npmrc
-.npmrc                        npm 通过 node-options 加载 fs-compat.mjs（data: URL，见下）
+  fs-compat.mjs               Windows EBUSY 重试（由 overlay.mjs 预加载，见下）
 ```
 
 ## 功能 → 装饰点对照
@@ -72,20 +76,23 @@ tools/
 | 顶栏模型选择器 | `transformIndexHtml` 注入 `/src/overlay/main.tsx`（在应用入口之前执行）；React 挂载到 `.topbar-actions`；`window.fetch` 装饰注入 `modelOverride`；`model-list.ts` 拉取列表并显示来源 baseURL，失败时展示服务端原因而非 `HTTP 502` |
 | 项目库（保存/切换/新建不丢草稿，完整切换结果） | `Storage.prototype.setItem` 装饰：上游每次自动保存草稿（`uom-forge-project-v3`，内含候选模型/自述/评估/时序等全部结果）时同步项目库；切换/新建前先落盘当前项目，然后**钉住草稿键**（`armProjectLoad`）再刷新页面——上游会在 `beforeunload` 和变更后 800ms 把内存里的工作区写回草稿键，不钉住就会把刚离开的项目当成新项目加载（并污染新激活的项目行）。库写入失败（配额/隐私模式）通过 `uom-forge-storage-error` 事件提示，不再静默丢数据 |
 | 证据阅读子模块缺失时降级 | overlay 配置在子模块不可解析时加 `qq-doc-clone` alias |
-| Windows 上 Codex ACP 清理 EBUSY（上游缺陷） | `tools/fs-compat.mjs` 通过 `.npmrc` 的 `node-options` 预加载，给 `fs.rm`/`fs.promises.rm` 加重试；`syncBuiltinESMExports()` 让上游 `import { rm } from 'node:fs/promises'` 生效 |
+| Windows 上 Codex ACP 清理 EBUSY（上游缺陷） | `tools/fs-compat.mjs` 由 `tools/overlay.mjs` 通过 `NODE_OPTIONS=--import <绝对路径>` 预加载，给 `fs.rm`/`fs.promises.rm` 加重试；`syncBuiltinESMExports()` 让上游 `import { rm } from 'node:fs/promises'` 生效 |
 
-## 为什么 `.npmrc` 里是一大串 data: URL
+## Windows 的 fs.rm 重试为何走 NODE_OPTIONS
 
-`npm test` 会启动多个 Node 子进程，其中 ACP 测试的子进程 cwd 在临时目录。
-若 `node-options=--import ./tools/fs-compat.mjs`，子进程会按自己的 cwd 解析相对
-路径而加载失败。因此 `.npmrc` 里内嵌的是 `data:text/javascript,...`（与 cwd 无关、
-可移植）。修改 `tools/fs-compat.mjs` 后运行：
+上游 `server/providers/codex.ts` 杀掉 ACP 子进程后立刻删除临时目录，Windows 上
+子进程还短暂持有 cwd 句柄，`fs.rm` 报 EBUSY，于是真正的失败被文件系统错误掩盖。
+修复（重试）不能写进上游源码，所以放在 `tools/fs-compat.mjs` 里 patch 内置模块。
 
-```bash
-node tools/build-npmrc.mjs
-```
+注入方式必须是 **`NODE_OPTIONS` 而不是命令行 `--import`**：测试运行器会为每个测试
+文件开一个子进程，只有环境变量能继承过去（已实测）。路径用 `file://` 绝对 URL，
+因为子进程的 cwd 在临时目录，相对路径会解析失败。
 
-`pull-upstream.mjs` 和守卫检查会校验二者同步。
+早期版本把这段内嵌成 `.npmrc` 的 `node-options` data: URL；上游现在自己发了
+`.npmrc`（`install-links=false`），为保持“上游文件逐字节一致”，本地 `.npmrc` 已删除，
+改由 `tools/overlay.mjs` 注入。副作用：**`npm test`（上游命令）不再带 shim**，
+ACP 清理测试在 Windows 上偶发 EBUSY 时请改用 `node tools/overlay.mjs test`；
+`pull-upstream.mjs` 的验证步骤已经走后者。
 
 ## 上游接缝清单（上游若改动这些，需要更新 overlay，但不会产生 git 冲突）
 
