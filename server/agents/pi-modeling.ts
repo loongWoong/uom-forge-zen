@@ -5,7 +5,7 @@ import type { ModelingInput, ProviderId } from '../../shared/analysis.ts'
 import type { RunTurn } from '../providers/types.ts'
 import type { StageOptions } from '../stages/contracts.ts'
 import { semanticModelPrompt } from '../stages/prompts.ts'
-import { piModelError, piSignal } from './runtime.ts'
+import { piSignal } from './runtime.ts'
 import { requireModelProviderConfig } from '../providers/model-config.ts'
 import { buildSemanticPreparation } from '../stages/semantic.ts'
 import type { SemanticPlanV2 } from '../../shared/semantic.ts'
@@ -65,7 +65,6 @@ export async function runPiModeling(
   let gaps: { id: string; status: string; note: string }[] = []
   let checks = 0
   let turns = 0
-  let toolRuns = 0
   let deliveryRetryQueued = false
   let lastAssistantText = ''
   let requireTool = false
@@ -119,7 +118,6 @@ export async function runPiModeling(
   agent.subscribe((event) => {
     if (event.type === 'turn_start') turns += 1
     if (event.type === 'tool_execution_start') {
-      toolRuns += 1
       requireTool = false
       options.onEvent?.({ type: 'phase', part: 'semantic', text: event.toolName === 'check_expression' ? 'Pi Agent 正在检查候选模型。' : event.toolName === 'request_clarification' ? 'Pi Agent 正在登记业务澄清问题。' : event.toolName === 'finish' ? 'Pi Agent 正在提交建模说明。' : `Pi Agent 正在执行 ${event.toolName}。` })
     }
@@ -139,10 +137,6 @@ export async function runPiModeling(
   try { await agent.prompt(semanticModelPrompt(input, 'tool', semantic)) } finally { deadline.signal.removeEventListener('abort', abort); deadline.dispose() }
   deadline.signal.throwIfAborted()
   if (!finished?.trim() && deliveryRetryQueued && REQUIRED_SECTIONS.every((section) => lastAssistantText.includes(section))) finished = lastAssistantText
-  // Surface the provider's own rejection (HTTP status, unsupported fields)
-  // instead of the generic "no hand-off" message when the model call failed.
-  const failure = piModelError(agent, 'Pi 语义建模', toolRuns === 0)
-  if (failure) throw failure
   if (!finished?.trim()) throw new Error('Pi Agent 未通过提交工具交接建模说明。')
   semantic = validateSemanticPlan(semantic, input.narrative)
   if (clarificationsAdded) options.onEvent?.({ type: 'semantic-plan', part: 'semantic', semantic })

@@ -1,5 +1,5 @@
-import type { Project } from './types.ts'
-import { restoreProject } from './persistence.ts'
+import type { Project } from '../types.ts'
+import { restoreProject } from '../persistence.ts'
 
 /**
  * Named-project library on top of the draft autosave slot in main.tsx.

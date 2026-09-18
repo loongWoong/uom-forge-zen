@@ -26,7 +26,6 @@ every call receives explicit stage inputs, without earlier conversation history.
 | `vite.config.ts` | 加载环境配置、挂载 API、配置前端开发服务 |
 | `src/main.tsx`、`src/components/*.tsx` | 工作区状态、阶段交互、文档阅读、模型展示与表单 |
 | `src/types.ts`、`src/persistence.ts` | 前端草稿和视图类型；解码浏览器存储并保留旧草稿内容 |
-| `src/project-store.ts` | 前端项目库：索引、按项目存草案、活动项目 ID 与名称派生（可注入存储，便于测试） |
 | `src/document.ts`、`src/responses.ts` | 文档处理、SSE 读取、响应边界与阶段结果检查 |
 
 `stages/modeling.ts` 负责 A/B 生成与第二阶段编排，`stages/expression.ts` 负责独立业务表达检查及一轮定点修正，校验放在 `validation/`。流式事件以可区分的联合类型定义；提供方只发出推理事件，阶段层附加阶段信息。检查失败不补造默认结论，保留最后一次有效候选及已完成检查。用户取消、请求超时和提前断流分别处理，失败路径同样清理计时器、流和 ACP 进程。
@@ -70,13 +69,11 @@ every call receives explicit stage inputs, without earlier conversation history.
 
 各次调用均可停止；B 失败时保留说明、语义草稿和旧模型，发送 `{ stage: 'compile', semanticPlan, narrative, semantic, provider }` 单独重试，无须重跑事实、故事或 A。B 的模型调用接收建模说明及已校验语义计划，narrative 只用于请求边界校验和后续业务表达检查。只有严格结构校验通过才更新图，不静默删除错误引用。候选页用“语义依据”展示故事、原句和映射，用“业务表达检查”展示检查与修正结果；本轮通过不代表已证明全部业务覆盖。检查超时或停止时，已完成候选仍可查看。页面不提供原始输出记录区域，业务理解、建模说明和模型自述继续在各自正文中流式显示；原始输出完整保留在本地草稿中用于诊断。运行进度、耗时及停止按钮在主区域可见，建模助手可收起并保留各阶段对话。
 
-Pi loop 使用 `UOM_PI_TIMEOUT_MS` 限制单个阶段的总时长（默认 300 秒），并与用户取消信号合并；Pi JSON 修复阶段未设置时跟随所选提供方的单次调用超时（`LLM_API_TIMEOUT_MS` / `GPT_API_TIMEOUT_MS` / `QWEN_API_TIMEOUT_MS`）。达到轮数上限或超时不会伪造通过结果。
-
-模型配置只在一处解析（`server/providers/model-config.ts`）：请求的 `modelOverride`、提供方 env、端点、密钥、超时、输出上限和 `thinking`/`reasoning_effort` 供直接调用（`server/providers/`）和 Pi JSON 修复 Agent（`server/agents/pi-model.ts`）共用，避免这条调用链参数漂移。Pi JSON 修复请求与直接调用保持同一参数：DeepSeek 通道发送 `thinking: { type: "disabled" }`，GPT 通道发送 `reasoning_effort`，`max_tokens` 取提供方上限（`LLM_MAX_OUTPUT_TOKENS` / `GPT_MAX_OUTPUT_TOKENS` / `QWEN_MAX_OUTPUT_TOKENS`）；Qwen 通道不发送任何厂商推理参数。业务理解与语义建模 Agent 通过同一模块的 `requireModelProviderConfig` 解析端点、密钥与模型 id。Pi 阶段失败时会把模型的真实错误（HTTP 状态与响应原因）上报给界面，不再只显示“Pi Agent 未提交…”。自定义/私有 OpenAI 兼容端点不支持 `stream_options`、`tools.strict`、`store` 等扩展时，可设 `UOM_PI_COMPAT=generic`，或用 `UOM_PI_STREAM_OPTIONS`、`UOM_PI_STRICT`、`UOM_PI_STORE`、`UOM_PI_MAX_TOKENS_FIELD`、`UOM_PI_MAX_TOKENS`、`UOM_PI_CONTEXT_WINDOW`、`UOM_PI_DISABLE_THINKING`、`UOM_PI_REASONING_EFFORT` 单项覆盖（完整说明见 `.env.example`）。设 `UOM_PI_FALLBACK=direct` 后，首轮即失败（尚未执行任何工具）的 Pi 业务理解阶段会用直接调用重跑一次并保留降级提示；默认关闭，错误原样上报。
+Pi loop 使用 `UOM_PI_TIMEOUT_MS` 限制单个阶段的总时长（默认 300 秒），并与用户取消信号合并；达到轮数上限或超时不会伪造通过结果。
 
 候选模型关系图按对象之间的联系自动排列，连线绕开卡片并标注方向。选中对象突出直接关系，可切换为只看相关对象；支持缩放、拖动画布、适应视图和展开查看。同类对象之间的多种关系共用回环路径，每条关系仍可独立选中；显示布局不改变模型语义。布局逻辑位于 `src/graph-layout.ts`，ELK 引擎按需加载，交互由 `src/components/ModelGraph.tsx` 实现。
 
-`src/workspace.ts` 跟踪文档、业务理解、模型和检验的版本依赖。保存说明、问题答案或修改建模反馈后，旧模型标记需要更新；模型变化后，自述和评估也标记需要更新。重复保存相同答案不增加版本。未更新模型不能启动新的检验。草稿自动保存到浏览器，也可手动保存；有内容的草稿会在首次自动保存时登记进项目库，顶栏下拉框可切换已保存项目，“新建”按钮从空白项目重新开始，切换到新项目前会先落盘当前内容。导入旧草稿时保留用户数据，已保存的旧答案会一次性并入说明并使旧模型失效，未保存答案仍保留为草稿。
+`src/workspace.ts` 跟踪文档、业务理解、模型和检验的版本依赖。保存说明、问题答案或修改建模反馈后，旧模型标记需要更新；模型变化后，自述和评估也标记需要更新。重复保存相同答案不增加版本。未更新模型不能启动新的检验。草稿自动保存到浏览器，也可手动保存；导入旧草稿时保留用户数据，已保存的旧答案会一次性并入说明并使旧模型失效，未保存答案仍保留为草稿。
 
 可用相同文档和提供方对比冻结的旧提示词与当前第一阶段：
 
@@ -128,18 +125,14 @@ relations, actions, functions, rules, activities, boundaries and textual evidenc
 `/api/discuss` uses the selected provider through the same interface.
 
 The UI and shared protocol constants default to DeepSeek and the Pi Agent runtime. Users
-can switch provider or runtime for the current session; the per-provider model override
-is kept in the browser and sent as `modelOverride`, so it survives reloads without
-changing server config. Previously saved provider preferences do not override this
-default. The server and command-line provider resolver also default to DeepSeek. Set
-`UOM_LLM_PROVIDER=deepseek`, `gpt` or `qwen` to override the provider default; the
-server uses Pi when a request selects it or when `UOM_AGENT_RUNTIME=pi` is set.
+can switch provider or runtime for the current session. Previously saved provider
+preferences do not override this default. The server and command-line provider resolver
+also default to DeepSeek. Set `UOM_LLM_PROVIDER=deepseek`, `gpt` or `qwen` to override
+the provider default; the server uses Pi when a request selects it or when
+`UOM_AGENT_RUNTIME=pi` is set.
 an explicit request or `--provider` choice takes precedence.
 Credentials are loaded from the project root `.env` and remain server-side.
 API URLs accept either a base URL ending in `/v1` or the full `/chat/completions` endpoint.
-The model switcher shows the model name the server reports via `GET /api/config`
-（只含提供方与模型名，不含密钥），也可直接 `curl http://127.0.0.1:5173/api/config` 自检；
-`GET /api/models?provider=gpt` 按所选提供方的端点与密钥获取模型列表（默认提供方为服务端 `UOM_LLM_PROVIDER`），失败时退回手工输入模型 id。`GET /api/config` 在显式设置 `UOM_AGENT_RUNTIME` 时返回服务端默认运行时，页面据此初始化运行时选择。修改 `.env` 中已存在的键后需完全重启 dev 进程才会生效。
 All DeepSeek calls explicitly disable thinking with `thinking: { type: "disabled" }`
 while retaining streaming output and the configured `LLM_MODEL`.
 `LLM_MAX_OUTPUT_TOKENS` sets its output limit (default: 16384) to allow longer
@@ -154,20 +147,9 @@ GPT uses the configured model (default `gpt-6-astra`) with
 `GPT_REASONING_EFFORT=medium` by default. It sends `reasoning_effort` and does not
 send DeepSeek's `thinking` parameter. Each call contains only the current stage's
 prompt; it does not start Codex or carry an ACP session's context.
-All three APIs default to a 300-second timeout; use `LLM_API_TIMEOUT_MS`,
-`GPT_API_TIMEOUT_MS` or `QWEN_API_TIMEOUT_MS` to override independently. Streaming,
-cancellation, timing and retrying compilation from the saved semantic plan work with
-any provider.
-
-- 部分端点（如 DeepSeek）默认输出上限只有几千 token，大 JSON 会被截断；可设置
-  `LLM_MAX_OUTPUT_TOKENS=32768` 显式放宽（需小于模型上下文减去提示词长度），默认 16384。
-- 弱模型偶尔不按 JSON 输出（先输出规划文字）或被截断。服务端解析时会依次尝试：
-  提取混杂在文字里的最外层 JSON 对象、修复被截断的 JSON（在可解析候选中取最长者，
-  截断的根对象不会被内部片段冒充）；自动恢复发生时会作为 validation warnings 明确
-  提示，修复结果需重点核对。若无法恢复，报错会带上模型输出预览，便于判断问题。
-  选择 Pi 运行时时，不合法的 JSON 先交给修复 Agent 定点修复，再由程序重新校验。
-- 本轮正文上限默认 12 万字符，从不截断；推理模型上下文更大时可用 `UOM_MAX_DOC_CHARS`
-  调高（需确保 prompt tokens ≈ 正文字符数 × 1.25 后仍留有输出余量）。
+Both APIs default to a 300-second timeout; use `LLM_API_TIMEOUT_MS` or
+`GPT_API_TIMEOUT_MS` to override independently. Streaming, cancellation, timing
+and retrying compilation from the saved semantic plan work with either provider.
 
 Codex ACP 的注册入口已注释停用，页面不再提供该选项，API 明确拒绝 `provider: "codex"`。
 适配器、依赖和手动实验脚本暂时保留；已有草稿的 ACP 耗时记录仍可查看。

@@ -1,6 +1,6 @@
 import type { RunTurn } from './types.ts'
 import { createChatCompletionsProvider } from './chat-completions.ts'
-import { resolveModelConfig } from './model-config.ts'
+import { timeoutFromEnv } from './lifetime.ts'
 
 /** Qwen uses the same OpenAI-compatible streaming API as the other providers. */
 export function createQwenProvider(
@@ -8,16 +8,21 @@ export function createQwenProvider(
   env: NodeJS.ProcessEnv = process.env,
 ): RunTurn {
   return createChatCompletionsProvider(() => {
-    const config = resolveModelConfig('qwen', { env })
+    const apiKey = env.QWEN_API_KEY
+    const url = env.QWEN_API_URL
+    if (!apiKey || !url)
+      throw new Error('Qwen 未配置 QWEN_API_KEY 或 QWEN_API_URL。')
+    const maxTokens = Number(env.QWEN_MAX_OUTPUT_TOKENS || 16384)
+    if (!Number.isSafeInteger(maxTokens) || maxTokens < 1)
+      throw new Error('QWEN_MAX_OUTPUT_TOKENS 必须为正整数。')
     return {
       provider: 'qwen',
-      label: config.label,
-      apiKey: config.apiKey,
-      url: config.baseUrl,
-      model: config.modelId,
-      timeoutMs: config.timeoutMs,
-      // Standard OpenAI-compatible shape: plain max_tokens, no reasoning fields.
-      parameters: { max_tokens: config.maxOutputTokens },
+      label: 'Qwen',
+      apiKey,
+      url,
+      model: env.QWEN_MODEL || 'Qwen3.6',
+      timeoutMs: timeoutFromEnv(env.QWEN_API_TIMEOUT_MS),
+      parameters: { max_tokens: maxTokens },
     }
   }, fetcher)
 }

@@ -1,6 +1,6 @@
 import type { CandidateModel } from '../../shared/model.ts'
 import { parseCandidateModel } from './model.ts'
-import { isRecord, parseJsonOutputWithMeta } from './values.ts'
+import { isRecord, parseJsonOutput } from './values.ts'
 
 const COLLECTIONS = ['objects', 'relations', 'actions', 'functions', 'rules', 'activities'] as const
 
@@ -39,7 +39,8 @@ function normalizeCompiledValue(value: unknown): unknown {
   return model
 }
 
-function checkStageBoundaries(candidate: CandidateModel): CandidateModel {
+export function validateCompiledModel(raw: string): CandidateModel {
+  const candidate = parseCandidateModel(normalizeCompiledValue(parseJsonOutput(raw)), { blocks: [] })
   // Reject invalid references instead of silently removing objects or edges.
   for (const item of [...candidate.objects, ...candidate.relations]) {
     if (item.properties.length) throw new Error('本轮只识别概念，不细化属性。')
@@ -56,22 +57,4 @@ function checkStageBoundaries(candidate: CandidateModel): CandidateModel {
         throw new Error('模型整理阶段不能代替支撑评估。')
     }
   return candidate
-}
-
-/** Parse with JSON recovery and report what the server had to repair. */
-export function validateCompiledModelWithMeta(raw: string): {
-  model: CandidateModel
-  notices: string[]
-} {
-  const { value, notices } = parseJsonOutputWithMeta(raw, '模型整理结果')
-  return {
-    model: checkStageBoundaries(
-      parseCandidateModel(normalizeCompiledValue(value), { blocks: [] }),
-    ),
-    notices,
-  }
-}
-
-export function validateCompiledModel(raw: string): CandidateModel {
-  return validateCompiledModelWithMeta(raw).model
 }

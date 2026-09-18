@@ -1,14 +1,19 @@
 import { Agent, type AgentTool } from '@earendil-works/pi-agent-core'
-import { Type } from '@earendil-works/pi-ai'
+import { Type, type Model } from '@earendil-works/pi-ai'
+import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
 import type { ProviderId } from '../../shared/analysis.ts'
 import type { StageOptions } from '../stages/contracts.ts'
-import { resolveModelConfig } from '../providers/model-config.ts'
-import { createPiStreamFn, toPiModel } from './pi-model.ts'
-import { piModelError, piSignal } from './runtime.ts'
+import { piSignal } from './runtime.ts'
+import { requireModelProviderConfig } from '../providers/model-config.ts'
 
 const jsonSchema = Type.Object({ json: Type.String({ description: '完整模型 JSON' }) })
 
 export type JsonValidation = { valid: true } | { valid: false; error: string }
+
+function modelFor(provider: ProviderId, env: NodeJS.ProcessEnv): Model<'openai-completions'> {
+  const config = requireModelProviderConfig(provider, env)
+  return { id: config.model, name: config.model, api: 'openai-completions', provider: config.piProvider, baseUrl: config.url!.replace(/\/chat\/completions\/?$/, ''), reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 24000 }
+}
 
 /**
  * Pi is used here as a bounded semantic gate/repairer. It never gets to
@@ -21,11 +26,10 @@ export async function checkOrRepairCompiledJson(
   validate: (json: string) => JsonValidation,
   options: StageOptions = {},
 ): Promise<string> {
-  const config = resolveModelConfig(provider, { override: options.model })
-  const deadline = piSignal(options, 'Pi JSON 修复', config.timeoutMs)
+  const env = process.env
+  const deadline = piSignal(options, 'Pi JSON 修复')
   let result: string | undefined
   let turns = 0
-  let toolRuns = 0
   let last: JsonValidation = { valid: false, error: initialError }
   let lastJson = ''
   let deliveryRetryQueued = false
@@ -56,25 +60,21 @@ export async function checkOrRepairCompiledJson(
   const agent = new Agent({
     initialState: {
       systemPrompt: '你是模型 JSON 修复 Agent。只修复程序报告的 JSON 语法、结构、ID 或引用错误，不重新设计业务，不增加、删除或改写建模说明中的业务语义。第一回合必须调用 validate_json；根据具体错误定点修复，再次校验；通过后立即调用 finish_json。最多修复两次，第四回合前必须提交；不要输出解释性长文。工具参数 json 必须是完整纯 JSON。最终结果必须通过工具提交，不要把 JSON 作为普通文本回复。',
-      model: toPiModel(config),
+      model: modelFor(provider, env),
       thinkingLevel: 'minimal',
       tools: [validateTool, finishTool],
     },
-    streamFn: createPiStreamFn(config),
+    streamFn: (streamModel, context, streamOptions) => streamSimple(streamModel as Model<'openai-completions'>, context, { ...streamOptions, ...(requireTool ? { toolChoice: 'required' as never } : {}), ...(provider === 'deepseek' && requireTool ? { samplingParams: { ...(streamOptions?.samplingParams || {}), thinking: { type: 'disabled' } } } : {}), apiKey: requireModelProviderConfig(provider, env).apiKey, maxTokens: 24000 }),
   })
   agent.shouldStopAfterTurn = () => turns >= 5
   agent.subscribe((event) => {
     if (event.type === 'turn_start') turns += 1
     if (event.type === 'tool_execution_start') {
       requireTool = false
-      toolRuns += 1
       options.onEvent?.({ type: 'phase', part: 'compile', text: 'Pi Agent 正在检查模型 JSON。' })
     }
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') options.onEvent?.({ type: 'delta', text: event.assistantMessageEvent.delta, size: event.assistantMessageEvent.delta.length })
-    if (event.type === 'message_end' && event.message.role === 'assistant') {
-      lastAssistantText = event.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
-      if (event.message.errorMessage) options.onEvent?.({ type: 'phase', part: 'compile', text: `Pi Agent 模型调用失败：${event.message.errorMessage}` })
-    }
+    if (event.type === 'message_end' && event.message.role === 'assistant') lastAssistantText = event.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
     if (event.type === 'turn_end' && event.message.role === 'assistant' && event.toolResults.length === 0 && !result && !deliveryRetryQueued) {
       deliveryRetryQueued = true
       requireTool = true
@@ -91,8 +91,6 @@ export async function checkOrRepairCompiledJson(
     deadline.dispose()
   }
   deadline.signal.throwIfAborted()
-  const failure = piModelError(agent, 'Pi JSON 修复', toolRuns === 0)
-  if (failure) throw failure
   if (!result?.trim() && deliveryRetryQueued) {
     const match = lastAssistantText.match(/\{[\s\S]*\}/)
     const candidate = match?.[0]?.trim()

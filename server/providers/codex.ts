@@ -33,7 +33,6 @@ export function createCodexProvider(
   return async (prompt, options = {}) => {
     options.signal?.throwIfAborted()
     const config = codexConfigFromEnv(env)
-    if (options.model) config.model = options.model
     const timing = createTurnTiming(
       {
         provider: 'codex',
@@ -205,16 +204,7 @@ export function createCodexProvider(
           child.kill('SIGKILL')
         }
       }
-      // Windows：被 SIGKILL 的子进程 cwd 句柄异步释放，立即 rm 会抛 EBUSY，
-      // 既留下临时目录，也会在 finally 里覆盖原始的拒绝原因（如 AbortError）。
-      // 先等子进程退出（短超时兜底），再带重试删除；清理失败不掩盖原始错误。
-      await Promise.race([
-        new Promise<void>((resolve) => child.once('exit', () => resolve())),
-        new Promise<void>((resolve) => setTimeout(resolve, 500)),
-      ])
-      await rm(cwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }).catch(
-        () => {},
-      )
+      await rm(cwd, { recursive: true, force: true })
     }
   }
 }

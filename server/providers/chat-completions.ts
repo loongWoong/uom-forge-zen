@@ -24,10 +24,7 @@ export function createChatCompletionsProvider(
     options.signal?.throwIfAborted()
     // Resolve lazily: Vite loads the server environment after module imports.
     const config = configure()
-    const { apiKey, label } = config
-    // A per-call override wins over the environment default so the UI can
-    // switch models without restarting the server.
-    const model = options.model || config.model
+    const { apiKey, model, label } = config
     const baseUrl = config.url.replace(/\/+$/, '')
     const url = /\/chat\/completions$/i.test(baseUrl)
       ? baseUrl

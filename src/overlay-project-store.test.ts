@@ -15,7 +15,7 @@ import {
   writeActiveProjectId,
   writeProject,
   type ProjectStorage,
-} from './project-store.ts'
+} from './overlay/project-store.ts'
 
 class MemoryStorage implements ProjectStorage {
   private items = new Map<string, string>()

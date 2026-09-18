@@ -5,9 +5,7 @@ import {
   ArrowRight,
   Bot,
   Check,
-  ChevronDown,
   ClipboardCheck,
-  FilePlus2,
   FileText,
   Network,
   PanelRightClose,
@@ -55,17 +53,6 @@ import type {
   WorkspacePage,
 } from './types.ts'
 import { restoreProject } from './persistence.ts'
-import {
-  listProjects,
-  projectDisplayName,
-  projectHasContent,
-  projectTimestamp,
-  readActiveProjectId,
-  readProject,
-  writeActiveProjectId,
-  writeProject,
-  type ProjectSummary,
-} from './project-store.ts'
 import { discussionText, isStageResult } from './responses.ts'
 import { isRecord } from './values.ts'
 import { createId } from './id.ts'
@@ -128,29 +115,9 @@ function loadProject(): Project {
     return EMPTY_PROJECT
   }
 }
-/** Draft plus the saved-project library, ready for the topbar picker. */
-function loadInitialState(): {
-  project: Project
-  activeId: string
-  projects: ProjectSummary[]
-} {
-  const projects = listProjects(localStorage)
-  const stored = readActiveProjectId(localStorage)
-  return {
-    project: loadProject(),
-    // Drop a stale pointer so autosave registers the draft again.
-    activeId: projects.some((item) => item.id === stored) ? stored : '',
-    projects,
-  }
-}
 
 function App() {
-  const [initial] = useState(loadInitialState)
-  const [project, setProject] = useState(initial.project)
-  const [savedProjects, setSavedProjects] = useState<ProjectSummary[]>(
-    initial.projects,
-  )
-  const [activeProjectId, setActiveProjectId] = useState(initial.activeId)
+  const [project, setProject] = useState(loadProject)
   const [view, setView] = useState<WorkspacePage>('document')
   const [modelMode, setModelMode] = useState<ModelViewMode>('model')
   const [reviewMode, setReviewMode] = useState<ReviewViewMode>('narration')
@@ -177,77 +144,10 @@ function App() {
   // constants remain the protocol/server defaults for API callers.
   const [provider, setProvider] = useState<ProviderId>('deepseek')
   const [runtime, setRuntime] = useState<AgentRuntimeId>('pi')
-  // 服务端各提供方默认模型（/api/config，只含模型名，不含密钥）与用户覆盖。
-  // 覆盖按提供方存在 localStorage，请求时以 modelOverride 发给服务端。
-  const [providerModels, setProviderModels] = useState<Record<ProviderId, string>>({
-    deepseek: '',
-    gpt: '',
-    qwen: '',
-  })
-  const [modelOverride, setModelOverride] = useState<Record<ProviderId, string>>(() => ({
-    deepseek: localStorage.getItem('uom-forge-model-deepseek') || '',
-    gpt: localStorage.getItem('uom-forge-model-gpt') || '',
-    qwen: localStorage.getItem('uom-forge-model-qwen') || '',
-  }))
-  const [modelPickerOpen, setModelPickerOpen] = useState(false)
-  const [availableModels, setAvailableModels] = useState<
-    Record<ProviderId, string[] | null>
-  >({ deepseek: null, gpt: null, qwen: null })
-  const [modelsError, setModelsError] = useState('')
-  const [modelDraft, setModelDraft] = useState('')
-  useEffect(() => {
-    let cancelled = false
-    fetch('/api/config')
-      .then((response) => (response.ok ? response.json() : null))
-      .then((config: { options?: { value?: string; model?: string }[]; runtime?: string } | null) => {
-        if (cancelled) return
-        if (Array.isArray(config?.options)) {
-          const map: Record<ProviderId, string> = { deepseek: '', gpt: '', qwen: '' }
-          for (const option of config.options)
-            if (option.value === 'deepseek' || option.value === 'gpt' || option.value === 'qwen')
-              map[option.value] = option.model || ''
-          setProviderModels(map)
-        }
-        // Server default runtime, only when the operator set UOM_AGENT_RUNTIME.
-        if (config?.runtime === 'direct' || config?.runtime === 'pi')
-          setRuntime(config.runtime)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [])
-  const effectiveModel = modelOverride[provider] || providerModels[provider]
-  const openModelPicker = () => {
-    setModelDraft(modelOverride[provider] || providerModels[provider] || '')
-    setModelsError('')
-    setModelPickerOpen(true)
-    if (availableModels[provider] === null)
-      fetch('/api/models?provider=' + provider)
-        .then((response) =>
-          response.ok ? response.json() : Promise.reject(new Error('HTTP ' + response.status)),
-        )
-        .then((data: { models?: string[] }) =>
-          setAvailableModels((current) => ({
-            ...current,
-            [provider]: Array.isArray(data.models) ? data.models : [],
-          })),
-        )
-        .catch((failure: Error) => setModelsError(failure.message))
-  }
-  const applyModelOverride = (value: string) => {
-    const next = value.trim()
-    const override = next && next !== providerModels[provider] ? next : ''
-    setModelOverride((current) => ({ ...current, [provider]: override }))
-    if (override) localStorage.setItem('uom-forge-model-' + provider, override)
-    else localStorage.removeItem('uom-forge-model-' + provider)
-    setModelPickerOpen(false)
-  }
   const busyRef = useRef(false)
   const abortRef = useRef<AbortController | null>(null)
   const cancelled = useRef(false)
   const projectRef = useRef(project)
-  const activeIdRef = useRef(initial.activeId)
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const followMessages = useRef(true)
   projectRef.current = project
@@ -286,89 +186,13 @@ function App() {
       messages: [...current.messages, { id: createId(), ...message }],
     }))
 
-  // Keep the project library in sync with the autosaved draft. The active
-  // project owns one index row; a draft with content is registered on its
-  // first autosave so 新建 can always switch away without losing work.
-  const persistProject = (next: Project) => {
-    const id = activeIdRef.current
-    if (id) {
-      setSavedProjects(writeProject(localStorage, id, next))
-      return
-    }
-    if (!projectHasContent(next)) return
-    const projects = writeProject(localStorage, createId(), next)
-    const created = projects[0]?.id || ''
-    activeIdRef.current = created
-    writeActiveProjectId(localStorage, created)
-    setActiveProjectId(created)
-    setSavedProjects(projects)
-  }
   const saveProject = (notify = false) => {
-    const next = projectRef.current
     try {
-      localStorage.setItem(STORAGE, JSON.stringify(next))
+      localStorage.setItem(STORAGE, JSON.stringify(projectRef.current))
+      if (notify) setToast('项目已保存')
     } catch {
       setToast('浏览器存储空间不足，草稿未能保存。请先导出或释放空间。')
-      return
     }
-    try {
-      persistProject(next)
-    } catch {
-      setToast('浏览器存储空间不足，项目未能保存。请先导出或释放空间。')
-      return
-    }
-    if (notify)
-      setToast(activeIdRef.current ? '项目已保存' : '还没有可保存的内容。')
-  }
-  const resetWorkspaceView = () => {
-    setView('document')
-    setModelMode('model')
-    setReviewMode('narration')
-    setSelectedId(null)
-    setDiscussionContext(null)
-    setEditing(false)
-    setEditedNarrative('')
-    setComparison(false)
-    setReadingText('')
-    setNarratingText('')
-    setJob(null)
-    setError('')
-    setDraft('')
-    setModelPickerOpen(false)
-  }
-  const freshProject = (): Project => ({
-    ...EMPTY_PROJECT,
-    answers: {},
-    outputs: {},
-    timings: {},
-    revisions: initialRevisions,
-    messages: EMPTY_PROJECT.messages.map((message) => ({ ...message })),
-  })
-  const newProject = () => {
-    // Flush the current draft into its library row before switching away.
-    saveProject()
-    activeIdRef.current = ''
-    writeActiveProjectId(localStorage, '')
-    setActiveProjectId('')
-    setProject(freshProject())
-    resetWorkspaceView()
-    setToast('已新建项目')
-  }
-  const openProject = (id: string) => {
-    if (!id || id === activeIdRef.current) return
-    const next = readProject(localStorage, id, EMPTY_PROJECT)
-    if (!next) {
-      setSavedProjects(listProjects(localStorage))
-      setToast('该项目已不存在，可能已被清理。')
-      return
-    }
-    saveProject()
-    activeIdRef.current = id
-    writeActiveProjectId(localStorage, id)
-    setActiveProjectId(id)
-    setProject(next)
-    resetWorkspaceView()
-    setToast(`已加载「${projectDisplayName(next)}」`)
   }
   useEffect(() => {
     const timer = setTimeout(() => saveProject(), 800)
@@ -522,13 +346,7 @@ function App() {
     const response = await fetch('/api/analyze/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        ...body,
-        stage,
-        provider,
-        runtime,
-        modelOverride: modelOverride[provider] || undefined,
-      }),
+      body: JSON.stringify({ ...body, stage, provider, runtime }),
       signal: controller.signal,
     })
     if (!response.ok) {
@@ -974,7 +792,6 @@ function App() {
         body: JSON.stringify({
           document: project.document,
           provider,
-          modelOverride: modelOverride[provider] || undefined,
           model: {
             candidate: model,
             understanding: project.understanding?.narrative,
@@ -1089,112 +906,15 @@ function App() {
                   {PROVIDERS[value].name}
                 </button>
               ))}
-              <div className="model-picker">
-                <button
-                  className="provider-model"
-                  title="点击切换模型"
-                  disabled={busy || discussing}
-                  aria-expanded={modelPickerOpen}
-                  onClick={openModelPicker}
-                >
-                  {effectiveModel || '模型'}
-                  <ChevronDown size={12} />
-                </button>
-                {modelPickerOpen && (
-                  <div className="model-popover" role="dialog" aria-label="切换模型">
-                    <strong>{PROVIDERS[provider].name} 模型</strong>
-                    <div className="model-list">
-                      {availableModels[provider] === null && !modelsError && (
-                        <small>正在获取模型列表…</small>
-                      )}
-                      {modelsError && (
-                        <small className="model-error">{modelsError}，可直接输入模型 id。</small>
-                      )}
-                      {availableModels[provider]?.map((id) => (
-                        <button
-                          key={id}
-                          type="button"
-                          className={id === modelDraft ? 'active' : ''}
-                          onClick={() => setModelDraft(id)}
-                        >
-                          {id}
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      value={modelDraft}
-                      onChange={(event) => setModelDraft(event.target.value)}
-                      placeholder="模型 id"
-                      aria-label="模型 id"
-                    />
-                    <div className="model-actions">
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={() => applyModelOverride(modelDraft)}
-                      >
-                        应用
-                      </button>
-                      {modelOverride[provider] && (
-                        <button
-                          type="button"
-                          onClick={() => applyModelOverride(providerModels[provider] || '')}
-                        >
-                          恢复默认
-                        </button>
-                      )}
-                      <button type="button" onClick={() => setModelPickerOpen(false)}>
-                        关闭
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
           </div>
-          <div className="project-actions">
-            <select
-              className="project-select"
-              aria-label="打开已保存的项目"
-              title="打开已保存的项目"
-              value={activeProjectId}
-              disabled={busy || discussing || savedProjects.length === 0}
-              onChange={(event) => openProject(event.target.value)}
-            >
-              <option value="">
-                {savedProjects.length === 0
-                  ? '暂无已保存项目'
-                  : activeProjectId
-                    ? '选择其他项目'
-                    : '打开已保存的项目'}
-              </option>
-              {savedProjects.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                  {item.updatedAt
-                    ? ` · ${projectTimestamp(item.updatedAt)}`
-                    : ''}
-                </option>
-              ))}
-            </select>
-            <button
-              className="icon-button project-button"
-              aria-label="新建项目"
-              title="新建项目"
-              disabled={busy || discussing}
-              onClick={newProject}
-            >
-              <FilePlus2 size={18} />
-            </button>
-            <button
-              className="icon-button project-button"
-              aria-label="保存草稿"
-              title="保存项目"
-              onClick={() => saveProject(true)}
-            >
-              <Save size={18} />
-            </button>
-          </div>
+          <button
+            className="icon-button"
+            aria-label="保存草稿"
+            onClick={() => saveProject(true)}
+          >
+            <Save size={18} />
+          </button>
           <button
             className="assistant-toggle secondary-button"
             aria-expanded={assistantOpen}

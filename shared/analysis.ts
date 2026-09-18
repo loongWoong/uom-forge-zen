@@ -127,11 +127,7 @@ export type StageEvent =
     }
   | { type: 'semantic-plan'; part: 'semantic'; semantic: SemanticPlanV2 }
   | ({ type: 'understanding-narrative' } & Understanding)
-export type AnalysisRequest = {
-  provider: ProviderId
-  runtime?: AgentRuntimeId
-  modelOverride?: string
-} & (
+export type AnalysisRequest = { provider: ProviderId; runtime?: AgentRuntimeId } & (
   | { stage: 'understand'; document: BusinessDocument }
   | { stage: 'model'; narrative: string; model?: unknown; instruction?: string }
   | {
@@ -148,7 +144,6 @@ export interface DiscussionRequest {
   document: BusinessDocument
   model: DiscussionContext
   messages: ChatMessage[]
-  modelOverride?: string
 }
 export interface AnalysisResults {
   understand: { understanding: Understanding }

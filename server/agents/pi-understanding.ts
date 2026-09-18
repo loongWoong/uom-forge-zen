@@ -4,7 +4,7 @@ import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
 import type { BusinessDocument, ProviderId } from '../../shared/analysis.ts'
 import type { StageOptions } from '../stages/contracts.ts'
 import type { RunTurn } from '../providers/types.ts'
-import { piModelError, piSignal } from './runtime.ts'
+import { piSignal } from './runtime.ts'
 import { requireModelProviderConfig } from '../providers/model-config.ts'
 import {
   UNDERSTANDING_SECTIONS,
@@ -148,7 +148,6 @@ export async function runPiUnderstanding(
   let finished: string | undefined
   let checks = 0
   let turns = 0
-  let toolRuns = 0
   let deliveryRetryQueued = false
   let requireTool = false
   let coverageComplete = false
@@ -265,7 +264,6 @@ ${UNDERSTANDING_SECTION_INSTRUCTIONS}
   agent.subscribe((event) => {
     if (event.type === 'turn_start') turns += 1
     if (event.type === 'tool_execution_start') {
-      toolRuns += 1
       options.onEvent?.({
         type: 'phase',
         part: 'reading',
@@ -307,10 +305,6 @@ ${UNDERSTANDING_SECTION_INSTRUCTIONS}
     SECTION_NAMES.every((section) => checkedNarrative.includes(section))
   )
     finished = checkedNarrative
-  // Surface the provider's own rejection (HTTP status, unsupported fields)
-  // instead of the generic "no hand-off" message when the model call failed.
-  const failure = piModelError(agent, 'Pi 业务理解', toolRuns === 0)
-  if (failure) throw failure
   if (!finished?.trim()) throw new Error('Pi Agent 未通过提交工具交接业务理解。')
   return finished
 }
