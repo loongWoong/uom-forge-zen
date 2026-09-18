@@ -187,6 +187,15 @@ test('a provider rejection surfaces the HTTP reason instead of a generic Pi mess
         { narrative: 'n' },
         async () => JSON.stringify({ checked: true, gaps: [] }),
         { provider: 'deepseek', runtime: 'pi', model: 'custom-model' },
+        {
+          schemaVersion: '2',
+          status: 'facts',
+          facts: [],
+          stories: [],
+          mappings: [],
+          boundaries: [],
+          clarifications: [],
+        },
       ),
       (error: Error) => {
         assert.match(error.message, /模型调用失败/)
