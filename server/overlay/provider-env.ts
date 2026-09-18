@@ -37,6 +37,38 @@ export interface ProviderEnvInheritance {
   keys: string[]
 }
 
+/** Per-provider deadlines that also bound a Pi stage. */
+const PROVIDER_TIMEOUT_KEYS = [
+  'LLM_API_TIMEOUT_MS',
+  'GPT_API_TIMEOUT_MS',
+  'QWEN_API_TIMEOUT_MS',
+] as const
+
+/**
+ * `piSignal` (server/agents/runtime.ts) reads only `UOM_PI_TIMEOUT_MS` and
+ * otherwise aborts a stage after 5 minutes, while the direct runtime honours
+ * the selected provider's timeout. Without this alias a slow custom endpoint
+ * (LLM_API_TIMEOUT_MS=900000) is cut off 5 minutes into a Pi run.
+ *
+ * The longest configured provider deadline wins, so the alias stays
+ * request-independent (no per-request environment mutation) and never shortens
+ * a run below what the slowest endpoint allows. Setting UOM_PI_TIMEOUT_MS
+ * explicitly always wins.
+ */
+export function applyPiStageTimeout(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (env.UOM_PI_TIMEOUT_MS?.trim()) return undefined
+  let longest = 0
+  for (const key of PROVIDER_TIMEOUT_KEYS) {
+    const value = Number(env[key])
+    if (Number.isFinite(value) && value > longest) longest = value
+  }
+  if (longest <= 0) return undefined
+  env.UOM_PI_TIMEOUT_MS = String(longest)
+  return env.UOM_PI_TIMEOUT_MS
+}
+
 /** Providers an earlier `inheritProviderEndpoints` call aliased. */
 export function inheritedProviders(env: NodeJS.ProcessEnv = process.env): ProviderId[] {
   const raw = env[INHERITED_ENV_KEY]?.trim()
@@ -62,6 +94,24 @@ function prefixOf(provider: ProviderId): string {
 }
 
 /**
+ * Record which providers this pass aliased. A stale marker must never survive:
+ * `model-config.ts` reads it to decide whether a provider behaves like the
+ * generic channel (thinking off, DeepSeek Pi provider, generic compat flags).
+ */
+function syncMarker(
+  env: NodeJS.ProcessEnv,
+  providers: ProviderId[],
+  keys: string[],
+): void {
+  if (providers.length === 0) {
+    delete env[INHERITED_ENV_KEY]
+    return
+  }
+  env[INHERITED_ENV_KEY] = providers.join(',')
+  keys.push(INHERITED_ENV_KEY)
+}
+
+/**
  * Fill unset GPT_/QWEN_ variables from the generic LLM_* channel. Mutates the
  * passed environment (idempotent) and reports what it wrote.
  */
@@ -69,7 +119,10 @@ export function inheritProviderEndpoints(
   env: NodeJS.ProcessEnv = process.env,
 ): ProviderEnvInheritance {
   const result: ProviderEnvInheritance = { providers: [], keys: [] }
-  if (providerFallbackDisabled(env)) return result
+  if (providerFallbackDisabled(env)) {
+    syncMarker(env, result.providers, result.keys)
+    return result
+  }
   const generic: Record<(typeof FALLBACK_FIELDS)[number], string | undefined> = {
     API_URL: env.LLM_API_URL?.trim(),
     API_KEY: env.LLM_API_KEY?.trim(),
@@ -78,7 +131,10 @@ export function inheritProviderEndpoints(
     MAX_OUTPUT_TOKENS: env.LLM_MAX_OUTPUT_TOKENS?.trim(),
   }
   // Without an endpoint or a key there is nothing meaningful to inherit.
-  if (!generic.API_URL && !generic.API_KEY) return result
+  if (!generic.API_URL && !generic.API_KEY) {
+    syncMarker(env, result.providers, result.keys)
+    return result
+  }
   for (const provider of FALLBACK_PROVIDERS) {
     const prefix = prefixOf(provider)
     const name = (field: string) => `${prefix}_${field}`
@@ -95,9 +151,6 @@ export function inheritProviderEndpoints(
     result.providers.push(provider)
     result.keys.push(...written)
   }
-  if (result.providers.length > 0) {
-    env[INHERITED_ENV_KEY] = result.providers.join(',')
-    result.keys.push(INHERITED_ENV_KEY)
-  }
+  syncMarker(env, result.providers, result.keys)
   return result
 }

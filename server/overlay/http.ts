@@ -3,6 +3,7 @@
 import './fetch-overlay.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createApiMiddleware } from '../api.ts'
+import { resolveProvider } from '../providers/index.ts'
 import type { RunTurn } from '../providers/types.ts'
 import type { AgentRuntimeId, ProviderId } from '../../shared/analysis.ts'
 import { isRecord } from '../validation/values.ts'
@@ -13,7 +14,7 @@ import {
 } from './context.ts'
 import { documentLimitError } from './document-limit.ts'
 import { installFetchOverlay } from './fetch-overlay.ts'
-import { inheritProviderEndpoints } from './provider-env.ts'
+import { applyPiStageTimeout, inheritProviderEndpoints } from './provider-env.ts'
 import { handleOverlayRoutes } from './routes.ts'
 import { createOverlayRunTurn } from './run-turn.ts'
 
@@ -43,6 +44,7 @@ export function createOverlayApiMiddleware(
   // channel, so the model list and the turn agree on one baseURL. Idempotent:
   // the Vite config already did this for the dev/build process.
   inheritProviderEndpoints()
+  applyPiStageTimeout()
   const upstream = createApiMiddleware(createOverlayRunTurn(runTurn))
 
   return async (request, response, next) => {
@@ -144,9 +146,17 @@ function readModelOverride(body: Record<string, unknown>): {
 
 function readProvider(body: Record<string, unknown>): ProviderId | undefined {
   const value = body.provider
-  return value === 'deepseek' || value === 'gpt' || value === 'qwen'
-    ? value
-    : undefined
+  if (value === 'deepseek' || value === 'gpt' || value === 'qwen') return value
+  // Upstream resolves a missing `provider` from UOM_LLM_PROVIDER. The fetch
+  // decorator has to name the same provider, otherwise it rewrites the request
+  // with another provider's model and vendor parameters (e.g. a GPT turn sent
+  // with DeepSeek's model and thinking:{type:'disabled'}).
+  try {
+    return resolveProvider(undefined)
+  } catch {
+    // an unset/invalid UOM_LLM_PROVIDER is upstream's error to report
+    return undefined
+  }
 }
 
 function readRuntime(body: Record<string, unknown>): AgentRuntimeId | undefined {

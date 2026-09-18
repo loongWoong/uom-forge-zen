@@ -9,7 +9,7 @@ import {
   type UserConfig,
 } from 'vite'
 import { createOverlayApiMiddleware } from './http.ts'
-import { inheritProviderEndpoints } from './provider-env.ts'
+import { applyPiStageTimeout, inheritProviderEndpoints } from './provider-env.ts'
 
 /**
  * Overlay Vite configuration.
@@ -60,6 +60,13 @@ function loadDotEnvDirectories(directories: string[], mode: string): void {
     console.log(
       `[overlay] ${inherited.providers.join('/')} 未配置独立端点，已复用 LLM_* 通用通道：${inherited.keys.join(', ')}（用 UOM_PROVIDER_FALLBACK=off 关闭）`,
     )
+  const piTimeout = applyPiStageTimeout()
+  if (piTimeout) {
+    inheritedKeys.add('UOM_PI_TIMEOUT_MS')
+    console.log(
+      `[overlay] Pi 阶段超时跟随 provider 超时：UOM_PI_TIMEOUT_MS=${piTimeout}（显式设置该变量可覆盖）`,
+    )
+  }
 }
 loadDotEnvDirectories(
   [projectRoot, path.resolve(projectRoot, '..')],

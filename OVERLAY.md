@@ -62,7 +62,8 @@ tools/
 | --- | --- |
 | `.env` 加载（项目根 + 上级 UOM 目录；改 .env 后配置热加载） | `server/overlay/vite-config.ts` 先加载环境，再动态 `import('../../vite.config.ts')` 组合 |
 | 单网关部署下 GPT/Qwen 复用通用通道 | `provider-env.ts` 在启动时把未配置的 `GPT_*`/`QWEN_*` 从 `LLM_*` 补齐（URL/KEY/MODEL/超时/输出上限），使模型列表与请求命中同一个 baseURL；显式配置优先，`UOM_PROVIDER_FALLBACK=off` 关闭 |
-| `/api/config`、`/api/models` 路由 | overlay middleware 注册在上游 API plugin 之前；命中即响应，其余 `next()` 委托；`/api/models` 返回 `{models, endpoint}`，把列表来源的 baseURL 暴露给界面 |
+| Pi 阶段超时跟随 provider 超时 | `provider-env.ts` 的 `applyPiStageTimeout`：`UOM_PI_TIMEOUT_MS` 未设置时，取各 provider `*_API_TIMEOUT_MS` 的最大值写入（上游 `piSignal` 只读这一个变量，否则 5 分钟就中断慢端点）；显式设置永远优先 |
+| `/api/config`、`/api/models` 路由 | overlay middleware 注册在上游 API plugin 之前；命中即响应，其余 `next()` 委托；`/api/models` 返回 `{models, endpoint}`，把列表来源的 baseURL 暴露给界面，并用 `AbortSignal.timeout`（`UOM_MODELS_TIMEOUT_MS`，默认 10000）兜住不回话的网关，否则选择器会永远停在“正在获取模型列表…” |
 | `modelOverride`（每次请求切换模型） | `http.ts` 缓冲请求体 → 校验 → 存入 AsyncLocalStorage；`fetch-overlay.ts` 在发出的请求体里改写 `model` |
 | direct 与 Pi 运行时参数统一（`max_tokens`、DeepSeek `thinking`、GPT `reasoning_effort`、`UOM_PI_COMPAT` 兼容开关） | 同一 fetch 装饰（两条链路最终都走 HTTP），配置来自 `model-config.ts` |
 | Pi provider 报错不再被"未通过提交工具交接…"掩盖 | fetch 装饰捕获非 2xx 响应体 → `http.ts` 重写 error 事件 / error JSON |
@@ -97,12 +98,20 @@ node tools/build-npmrc.mjs
 
 ## 已知限制（与旧本地分支的差异）
 
-- **`UOM_MAX_DOC_CHARS` 无法超过 120000**：上游 `validateDocument` 的硬上限仍在，
-  overlay 的前置校验只能收紧或给出更清晰的报错，无法放宽。
+- **`UOM_MAX_DOC_CHARS` 无法超过 120000**：上游 `server/validation/document.ts` 的
+  硬上限（`validateDocument` 正文合计 120000、`requireText` 单段文本 120000）是字面量，
+  实测 121307 字符的请求会被上游拒绝为“本轮最多分析 12 万个正文字符…”。
+  overlay 的前置校验只能收紧或把报错说得更清楚，无法放宽：该常量位于
+  `vite.config.ts` 静态 import 的 server 代码里，由 esbuild 打进配置 bundle，
+  Vite 的 `resolve.alias`/插件管线根本不经过它，所以没有“不改上游文件也能替换校验器”的
+  装饰点。要跑 >12 万字符的文档，只能按章节拆分，或明确授权直接改上游常量
+  （会破坏“上游文件逐字节一致”，`pull-upstream.mjs` 会将其报为违规）。
 - **`UOM_PI_FALLBACK=direct` 未移植**：它需要阶段级重跑（SSE 已输出部分内容），
   无法在请求边界无副作用地装饰；Pi 首轮失败现在会直接暴露 provider 的真实 HTTP 原因。
-- **Pi 阶段超时**：不再按 provider 超时自动放宽，使用上游默认 300000ms；
-  需要更久请显式设置 `UOM_PI_TIMEOUT_MS`。
+- **Pi 阶段超时**：`UOM_PI_TIMEOUT_MS` 未设置时自动取各 provider 超时的最大值
+  （启动日志会打印 `[overlay] Pi 阶段超时跟随 provider 超时：…`）；取最大值而非
+  “当前 provider 的值”，是为了不去在请求中修改全局环境变量（并发请求会互相干扰）。
+  需要固定值就显式设置 `UOM_PI_TIMEOUT_MS`。
 - **Codex（已停用的 ACP 适配器）** 的本地 `model` 覆盖未移植；仅影响
   `scripts/compare-reasoning.ts` 的手动实验。
 - **项目切换依赖上游 800ms 自动保存**：overlay 在"新建/切换/保存到项目库"前会先
@@ -110,6 +119,15 @@ node tools/build-npmrc.mjs
 - **项目库占用 localStorage 配额**：每个项目存一份完整 `Project` JSON（含正文块、
   候选模型、消息记录），浏览器 5MB 左右；配额写满时会弹出“项目库保存失败”，
   已保存的项目不受影响，可先删除旧项目或导出后继续。
+- **项目库没有删除/重命名入口**：只能保存和切换。项目行不会自动清理，长期
+  使用会一直占着 localStorage 配额（与上一条同源，需要时可补一个列表管理面板）。
+- **项目时间戳会随每次自动保存刷新**：库里的“更新时间”不是“最后一次手动保存”，
+  所以下拉列表的排序会随后台自动保存变动。
+- **`/api/config` 会回显各 provider 的 endpoint**（不含 key）；上游 dev server 默认监听
+  `0.0.0.0`，同一局域网内的人能看到内网网关地址。不要在这个服务上暴露公网。
+- **`pull-upstream.mjs` 只能校验“上游已有的文件”**：若上游未来新增一个与本地
+  overlay 同名的文件（例如 `OVERLAY.md`、`tools/overlay.mjs`），合并仍会报 add/add
+  冲突，需要人工选一侧。
 - **GPT/Qwen 端点的回退只影响环境变量**：`provider-env.ts` 只填空值；若某提供方
   只配了一半（例如只有 key 没有 URL），overlay 不会补另一半，该提供方继续报自己的
   "未配置"错误，以免把请求发到错误的端点。

@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { inheritProviderEndpoints } from './provider-env.ts'
+import {
+  applyPiStageTimeout,
+  inheritProviderEndpoints,
+  inheritedProviders,
+  INHERITED_ENV_KEY,
+} from './provider-env.ts'
 import { listEndpointModels, providerDescriptor } from './routes.ts'
 import { resolveModelConfig } from './model-config.ts'
 
@@ -132,4 +137,59 @@ test('the picker lists the models of the baseURL the turn will call', async () =
     'http://gw.test/v1/models | Bearer generic-key',
     'http://gw.test/v1/models | Bearer generic-key',
   ])
+})
+
+test('the inherited marker disappears once every provider stands on its own', () => {
+  const env = genericEnv()
+  inheritProviderEndpoints(env)
+  assert.deepEqual(inheritedProviders(env), ['gpt', 'qwen'])
+  // The operator later configures real per-provider endpoints in .env.
+  const configured = genericEnv({
+    GPT_API_URL: 'http://openai.test/v1',
+    GPT_API_KEY: 'gpt-key',
+    GPT_MODEL: 'gpt-real',
+    QWEN_API_URL: 'http://dashscope.test/v1',
+    QWEN_API_KEY: 'qwen-key',
+    QWEN_MODEL: 'qwen-real',
+  })
+  delete configured[INHERITED_ENV_KEY]
+  // Simulate the same process re-running the alias with the new environment:
+  // the stale marker must not keep the generic profile stuck on gpt/qwen.
+  configured[INHERITED_ENV_KEY] = 'gpt,qwen'
+  inheritProviderEndpoints(configured)
+  assert.deepEqual(inheritedProviders(configured), [])
+  assert.equal(resolveModelConfig('gpt', { env: configured }).modelId, 'gpt-real')
+})
+
+test('UOM_PROVIDER_FALLBACK=off also clears a marker from an earlier start', () => {
+  const env = genericEnv({ UOM_PROVIDER_FALLBACK: 'off', [INHERITED_ENV_KEY]: 'gpt,qwen' })
+  const result = inheritProviderEndpoints(env)
+  assert.deepEqual(result.providers, [])
+  assert.deepEqual(inheritedProviders(env), [])
+})
+
+test('a Pi stage inherits the longest configured provider deadline', () => {
+  const env: NodeJS.ProcessEnv = {
+    LLM_API_TIMEOUT_MS: '900000',
+    GPT_API_TIMEOUT_MS: '120000',
+  }
+  assert.equal(applyPiStageTimeout(env), '900000')
+  // Idempotent: the derived value is never overwritten by a second pass.
+  assert.equal(applyPiStageTimeout(env), undefined)
+  assert.equal(env.UOM_PI_TIMEOUT_MS, '900000')
+})
+
+test('an explicit UOM_PI_TIMEOUT_MS always wins', () => {
+  const env: NodeJS.ProcessEnv = {
+    UOM_PI_TIMEOUT_MS: '60000',
+    LLM_API_TIMEOUT_MS: '900000',
+  }
+  assert.equal(applyPiStageTimeout(env), undefined)
+  assert.equal(env.UOM_PI_TIMEOUT_MS, '60000')
+})
+
+test('without a configured provider timeout upstream keeps its own default', () => {
+  const env: NodeJS.ProcessEnv = { LLM_API_TIMEOUT_MS: 'abc' }
+  assert.equal(applyPiStageTimeout(env), undefined)
+  assert.equal(env.UOM_PI_TIMEOUT_MS, undefined)
 })

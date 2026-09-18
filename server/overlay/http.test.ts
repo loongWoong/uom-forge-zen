@@ -10,6 +10,7 @@ import { once } from 'node:events'
 import type { AnalysisEvent } from '../../shared/analysis.ts'
 import type { RunTurn } from '../providers/types.ts'
 import { currentContext } from './context.ts'
+import { INHERITED_ENV_KEY } from './provider-env.ts'
 import { createOverlayApiMiddleware } from './http.ts'
 
 async function serve(runTurn?: RunTurn) {
@@ -111,6 +112,9 @@ const ENV_KEYS = [
   'QWEN_MAX_OUTPUT_TOKENS',
   'UOM_MAX_DOC_CHARS',
   'UOM_PI_COMPAT',
+  'UOM_PI_TIMEOUT_MS',
+  'UOM_MODELS_TIMEOUT_MS',
+  INHERITED_ENV_KEY,
 ] as const
 
 function snapshotEnv(): Record<string, string | undefined> {
@@ -400,5 +404,82 @@ test('JSON-recovery notices are appended to the stage result warnings', async ()
     )
   } finally {
     await close(server)
+  }
+})
+
+test('concurrent requests keep their own provider context', async () => {
+  const endpoint = await mockEndpoint((_body, response) => streamOk(response))
+  const saved = snapshotEnv()
+  const { server, url } = await serve()
+  try {
+    process.env.LLM_API_URL = endpoint.url
+    process.env.LLM_API_KEY = 'sk-test'
+    process.env.LLM_MODEL = 'ds-model'
+    const request = (override: string) =>
+      post(url + '/api/analyze/stream', {
+        stage: 'understand',
+        provider: 'deepseek',
+        runtime: 'direct',
+        modelOverride: override,
+        document: { name: 'doc', blocks: [{ id: '1', text: 'text' }] },
+      })
+    const responses = await Promise.all([request('model-a'), request('model-b')])
+    await Promise.all(responses.map((response) => response.text()))
+    assert.deepEqual(
+      endpoint.bodies.map((body) => body.model).sort(),
+      ['model-a', 'model-b'],
+    )
+  } finally {
+    restoreEnv(saved)
+    await close(server)
+    await endpoint.close()
+  }
+})
+
+test('a request without a provider keeps the server default provider config', async () => {
+  const endpoint = await mockEndpoint((_body, response) => streamOk(response))
+  const saved = snapshotEnv()
+  const { server, url } = await serve()
+  try {
+    // Upstream resolves a missing `provider` from UOM_LLM_PROVIDER, so this turn
+    // runs on gpt. The fetch decorator must not rewrite it with LLM_* settings.
+    process.env.UOM_LLM_PROVIDER = 'gpt'
+    process.env.LLM_API_URL = endpoint.url
+    process.env.LLM_API_KEY = 'sk-generic'
+    process.env.LLM_MODEL = 'generic-model'
+    process.env.GPT_API_URL = endpoint.url
+    process.env.GPT_API_KEY = 'sk-gpt'
+    process.env.GPT_MODEL = 'gpt-configured'
+    const response = await post(url + '/api/analyze/stream', {
+      stage: 'understand',
+      runtime: 'direct',
+      document: { name: 'doc', blocks: [{ id: '1', text: 'text' }] },
+    })
+    await response.text()
+    assert.equal(endpoint.bodies[0]?.model, 'gpt-configured')
+    assert.equal(endpoint.bodies[0]?.thinking, undefined)
+  } finally {
+    restoreEnv(saved)
+    await close(server)
+    await endpoint.close()
+  }
+})
+
+test('/api/models gives up on an endpoint that never answers', async () => {
+  const hanging = await mockEndpoint(() => {})
+  const saved = snapshotEnv()
+  const { server, url } = await serve()
+  try {
+    process.env.LLM_API_URL = hanging.url
+    process.env.LLM_API_KEY = 'sk-test'
+    process.env.UOM_MODELS_TIMEOUT_MS = '150'
+    const response = await fetch(url + '/api/models?provider=deepseek')
+    const body = (await response.json()) as { error?: string }
+    assert.equal(response.status, 502)
+    assert.match(String(body.error), /超时/)
+  } finally {
+    restoreEnv(saved)
+    await close(server)
+    await hanging.close()
   }
 })

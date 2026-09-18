@@ -37,6 +37,17 @@ interface ProviderOption {
   endpoint?: string
 }
 
+/** Deadline for listing an endpoint's models (`UOM_MODELS_TIMEOUT_MS`). */
+export function modelsTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number.parseInt(env.UOM_MODELS_TIMEOUT_MS || '', 10)
+  return Number.isFinite(configured) && configured > 0 ? configured : 10000
+}
+
+function isTimeoutError(error: unknown): boolean {
+  const name = (error as { name?: unknown })?.name
+  return name === 'TimeoutError' || name === 'AbortError'
+}
+
 /** Read-only provider/model descriptor for /api/config; never includes secrets. */
 export function providerDescriptor(
   env: NodeJS.ProcessEnv = process.env,
@@ -119,12 +130,18 @@ export async function listEndpointModels(
     )
   const baseUrl = normalizeEndpoint(configuredUrl)
   const endpoint = publicEndpoint(configuredUrl) as string
+  const timeoutMs = modelsTimeoutMs(env)
   let response: Response
   try {
     response = await fetch(`${baseUrl}/models`, {
       headers: { authorization: `Bearer ${apiKey}` },
+      // A gate that accepts the connection and never answers must not leave the
+      // picker spinning forever.
+      signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (error) {
+    if (isTimeoutError(error))
+      throw new Error(`模型列表获取超时（${timeoutMs} 毫秒），已放弃等待。`)
     throw new Error(
       `模型列表获取失败：${error instanceof Error ? error.message : String(error)}`,
     )
