@@ -23,11 +23,15 @@ const args = process.argv.slice(2)
 const skipVerify = args.includes('--no-verify')
 const withBuild = args.includes('--build')
 
+/** npm/npx are .cmd shims on Windows; spawn/exec need the extension. */
+const exe = (name) =>
+  process.platform === 'win32' && /^(npm|npx)$/.test(name) ? `${name}.cmd` : name
+
 const capture = (command, commandArgs) =>
-  execFileSync(command, commandArgs, { cwd: projectRoot, encoding: 'utf8' }).trim()
+  execFileSync(exe(command), commandArgs, { cwd: projectRoot, encoding: 'utf8' }).trim()
 
 const run = (command, commandArgs) => {
-  execFileSync(command, commandArgs, { cwd: projectRoot, stdio: 'inherit' })
+  execFileSync(exe(command), commandArgs, { cwd: projectRoot, stdio: 'inherit' })
 }
 
 const step = (message) => console.log(`\n== ${message}`)
@@ -129,6 +133,12 @@ try {
   if (merged.split('\n').includes('package-lock.json')) {
     step('package-lock.json 有更新，安装依赖')
     run('npm', ['install'])
+    // 本机的 npm 版本会顺手重写 lock（加 dev 标记、合并平台包）。依赖已装好，
+    // 但仓库里的 lock 必须保持上游原样，否则下次拉取又是一条“本地修改”。
+    if (capture('git', ['diff', '--name-only', 'HEAD']).split('\n').includes('package-lock.json')) {
+      run('git', ['checkout', '--', 'package-lock.json'])
+      console.warn('package-lock.json 已恢复为上游版本（本机 npm 会重写它，属正常现象）。')
+    }
   }
   if (merged.split('\n').includes('package.json')) {
     console.warn('package.json 有更新，请检查依赖是否仍需安装：npm install')

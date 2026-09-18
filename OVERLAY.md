@@ -90,9 +90,17 @@ tools/
 
 早期版本把这段内嵌成 `.npmrc` 的 `node-options` data: URL；上游现在自己发了
 `.npmrc`（`install-links=false`），为保持“上游文件逐字节一致”，本地 `.npmrc` 已删除，
-改由 `tools/overlay.mjs` 注入。副作用：**`npm test`（上游命令）不再带 shim**，
-ACP 清理测试在 Windows 上偶发 EBUSY 时请改用 `node tools/overlay.mjs test`；
-`pull-upstream.mjs` 的验证步骤已经走后者。
+改由 `tools/overlay.mjs` 注入。副作用：**`npm test`（上游命令）在这台 Windows 机器上
+固定有 6 个 Codex ACP 测试因 EBUSY 失败**（上游缺陷：杀子进程后立刻
+rmdir 临时目录），请改用 `node tools/overlay.mjs test`（同模式，已预加载 shim，
+200/200）；`pull-upstream.mjs` 的验证步骤已经走后者。若希望 `npm test` 也全绿，
+可把 `node-options=--import file:///F:/caochun/uom-forge/tools/fs-compat.mjs`
+写进用户级 `~/.npmrc`（影响本机所有 npm 项目，自行权衡）。
+
+另外：本机 npm 会在 `npm install` 时用自己版本重写 `package-lock.json`
+（补 `dev: true`、合并平台包），`pull-upstream.mjs` 装完依赖后会自动把 lock
+恢复为上游版本；手动 `npm install` 后如 git 显示 lock 被改，
+`git checkout -- package-lock.json` 即可（依赖本身不受影响）。
 
 ## 上游接缝清单（上游若改动这些，需要更新 overlay，但不会产生 git 冲突）
 
