@@ -4,12 +4,12 @@ import type { ProviderId } from '../../shared/analysis.ts'
 import { PROVIDERS } from '../../shared/analysis.ts'
 import {
   DRAFT_KEY,
+  STORAGE_ERROR_EVENT,
+  armProjectLoad,
   listProjects,
   persistDraft,
   projectBodyKey,
   readActiveProjectId,
-  withSuppressedMirror,
-  writeActiveProjectId,
 } from './storage-sync.ts'
 import { fetchEndpointModels } from './model-list.ts'
 import { modelOverrideFor, writeModelOverride } from './request-override.ts'
@@ -283,20 +283,18 @@ function ProjectLibrary({
       refresh()
       return
     }
+    // Store the latest edit of the project we are leaving, then pin the draft to
+    // the one being opened: upstream rewrites the draft from its in-memory
+    // workspace on unload and on every autosave, which would otherwise load the
+    // previous project again and mirror it into the new active row.
     flushDraft()
-    withSuppressedMirror(() => {
-      writeActiveProjectId(localStorage, id)
-      localStorage.setItem(DRAFT_KEY, body)
-    })
+    armProjectLoad(id, body)
     window.location.reload()
   }
 
   const createProject = () => {
     flushDraft()
-    withSuppressedMirror(() => {
-      writeActiveProjectId(localStorage, '')
-      localStorage.removeItem(DRAFT_KEY)
-    })
+    armProjectLoad('', null)
     window.location.reload()
   }
 
@@ -364,6 +362,21 @@ export function TopbarOverlay(): ReactNode {
     const timer = window.setTimeout(() => setToast(''), 2600)
     return () => window.clearTimeout(timer)
   }, [toast])
+
+  // A library write that failed (storage full, private mode) must not look like
+  // a saved project.
+  useEffect(() => {
+    const onError = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: unknown }>).detail
+      setToast(
+        typeof detail?.message === 'string' && detail.message
+          ? detail.message
+          : '项目库保存失败。',
+      )
+    }
+    window.addEventListener(STORAGE_ERROR_EVENT, onError)
+    return () => window.removeEventListener(STORAGE_ERROR_EVENT, onError)
+  }, [])
 
   return (
     <>

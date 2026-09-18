@@ -69,7 +69,7 @@ tools/
 | JSON 恢复（截断、前后规划文字、非法尾逗号）+ 恢复提示 | `run-turn.ts` 包装注入的 `RunTurn`；提示经响应装饰追加到 `validation.warnings` / `understanding.warnings` |
 | `UOM_MAX_DOC_CHARS` | `document-limit.ts` 在委托上游前显式拒绝超限请求（不截断正文） |
 | 顶栏模型选择器 | `transformIndexHtml` 注入 `/src/overlay/main.tsx`（在应用入口之前执行）；React 挂载到 `.topbar-actions`；`window.fetch` 装饰注入 `modelOverride`；`model-list.ts` 拉取列表并显示来源 baseURL，失败时展示服务端原因而非 `HTTP 502` |
-| 项目库（保存/切换/新建不丢草稿） | `Storage.prototype.setItem` 装饰：上游每次自动保存草稿时同步项目库；UI 写 `uom-forge-project-v3` + `uom-forge-active-project-v1` 后刷新页面 |
+| 项目库（保存/切换/新建不丢草稿，完整切换结果） | `Storage.prototype.setItem` 装饰：上游每次自动保存草稿（`uom-forge-project-v3`，内含候选模型/自述/评估/时序等全部结果）时同步项目库；切换/新建前先落盘当前项目，然后**钉住草稿键**（`armProjectLoad`）再刷新页面——上游会在 `beforeunload` 和变更后 800ms 把内存里的工作区写回草稿键，不钉住就会把刚离开的项目当成新项目加载（并污染新激活的项目行）。库写入失败（配额/隐私模式）通过 `uom-forge-storage-error` 事件提示，不再静默丢数据 |
 | 证据阅读子模块缺失时降级 | overlay 配置在子模块不可解析时加 `qq-doc-clone` alias |
 | Windows 上 Codex ACP 清理 EBUSY（上游缺陷） | `tools/fs-compat.mjs` 通过 `.npmrc` 的 `node-options` 预加载，给 `fs.rm`/`fs.promises.rm` 加重试；`syncBuiltinESMExports()` 让上游 `import { rm } from 'node:fs/promises'` 生效 |
 
@@ -107,6 +107,9 @@ node tools/build-npmrc.mjs
   `scripts/compare-reasoning.ts` 的手动实验。
 - **项目切换依赖上游 800ms 自动保存**：overlay 在"新建/切换/保存到项目库"前会先
   点击上游的保存按钮刷新草稿，正常情况下不会丢最后几毫秒的编辑。
+- **项目库占用 localStorage 配额**：每个项目存一份完整 `Project` JSON（含正文块、
+  候选模型、消息记录），浏览器 5MB 左右；配额写满时会弹出“项目库保存失败”，
+  已保存的项目不受影响，可先删除旧项目或导出后继续。
 - **GPT/Qwen 端点的回退只影响环境变量**：`provider-env.ts` 只填空值；若某提供方
   只配了一半（例如只有 key 没有 URL），overlay 不会补另一半，该提供方继续报自己的
   "未配置"错误，以免把请求发到错误的端点。
