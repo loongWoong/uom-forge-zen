@@ -15,6 +15,7 @@
  *   node tools/pull-upstream.mjs [--no-verify] [--build]
  */
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -23,15 +24,30 @@ const args = process.argv.slice(2)
 const skipVerify = args.includes('--no-verify')
 const withBuild = args.includes('--build')
 
-/** npm/npx are .cmd shims on Windows; spawn/exec need the extension. */
-const exe = (name) =>
-  process.platform === 'win32' && /^(npm|npx)$/.test(name) ? `${name}.cmd` : name
+/**
+ * npm is a .cmd shim on Windows: newer Node refuses to spawn .cmd without
+ * `shell: true` (EINVAL), and with a shell the argument quoting gets fragile.
+ * Invoke npm's JS entry with node instead; fall back to the .cmd shim with a
+ * shell only when the entry cannot be found.
+ */
+const npmCli = [
+  path.join(projectRoot, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+].find((candidate) => existsSync(candidate))
+
+const spawnCommand = (command, commandArgs, options) => {
+  if (command === 'npm') {
+    if (npmCli) return execFileSync(process.execPath, [npmCli, ...commandArgs], options)
+    return execFileSync('npm.cmd', commandArgs, { ...options, shell: process.platform === 'win32' })
+  }
+  return execFileSync(command, commandArgs, options)
+}
 
 const capture = (command, commandArgs) =>
-  execFileSync(exe(command), commandArgs, { cwd: projectRoot, encoding: 'utf8' }).trim()
+  spawnCommand(command, commandArgs, { cwd: projectRoot, encoding: 'utf8' }).trim()
 
 const run = (command, commandArgs) => {
-  execFileSync(exe(command), commandArgs, { cwd: projectRoot, stdio: 'inherit' })
+  spawnCommand(command, commandArgs, { cwd: projectRoot, stdio: 'inherit' })
 }
 
 const step = (message) => console.log(`\n== ${message}`)
