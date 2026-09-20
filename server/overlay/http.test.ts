@@ -114,6 +114,12 @@ const ENV_KEYS = [
   'UOM_PI_COMPAT',
   'UOM_PI_TIMEOUT_MS',
   'UOM_MODELS_TIMEOUT_MS',
+  'GLM_API_URL',
+  'GLM_API_KEY',
+  'GLM_MODEL',
+  'GLM_API_TIMEOUT_MS',
+  'GLM_MAX_OUTPUT_TOKENS',
+  'GLM_REASONING_EFFORT',
   INHERITED_ENV_KEY,
 ] as const
 
@@ -145,6 +151,9 @@ test('/api/config reports the effective provider and model without secrets', asy
     delete process.env.QWEN_API_URL
     delete process.env.QWEN_API_KEY
     delete process.env.QWEN_MODEL
+    delete process.env.GLM_API_URL
+    delete process.env.GLM_API_KEY
+    delete process.env.GLM_MODEL
     const response = await fetch(url + '/api/config')
     assert.equal(response.status, 200)
     const body = (await response.json()) as {
@@ -170,6 +179,12 @@ test('/api/config reports the effective provider and model without secrets', asy
         endpoint: 'http://test.invalid/v1',
       },
       { value: 'qwen', model: 'Qwen3.6', ready: false },
+      {
+        value: 'glm',
+        model: 'glm-5.3-flash',
+        ready: false,
+        endpoint: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      },
     ])
     assert.equal((await fetch(url + '/api/config', { method: 'POST' })).status, 405)
     // 密钥绝不进入浏览器可见的响应
@@ -425,10 +440,10 @@ test('concurrent requests keep their own provider context', async () => {
       })
     const responses = await Promise.all([request('model-a'), request('model-b')])
     await Promise.all(responses.map((response) => response.text()))
-    assert.deepEqual(
-      endpoint.bodies.map((body) => body.model).sort(),
-      ['model-a', 'model-b'],
-    )
+    // 上游的新 understanding 阶段一次请求可能发多次模型调用；隔离的判据是
+    // 每个请求的覆写只出现在自己的调用里，绝不出现第三个模型值。
+    const models = [...new Set(endpoint.bodies.map((body) => body.model))].sort()
+    assert.deepEqual(models, ['model-a', 'model-b'])
   } finally {
     restoreEnv(saved)
     await close(server)
@@ -481,5 +496,34 @@ test('/api/models gives up on an endpoint that never answers', async () => {
     restoreEnv(saved)
     await close(server)
     await hanging.close()
+  }
+})
+
+test('a GLM turn keeps its vendor parameters and applies the override', async () => {
+  const endpoint = await mockEndpoint((_body, response) => streamOk(response))
+  const saved = snapshotEnv()
+  const { server, url } = await serve()
+  try {
+    process.env.GLM_API_URL = endpoint.url
+    process.env.GLM_API_KEY = 'sk-glm'
+    process.env.GLM_MODEL = 'glm-configured'
+    const response = await post(url + '/api/analyze/stream', {
+      stage: 'understand',
+      provider: 'glm',
+      runtime: 'direct',
+      modelOverride: 'glm-override',
+      document: { name: 'doc', blocks: [{ id: '1', text: 'text' }] },
+    })
+    await response.text()
+    assert.equal(endpoint.bodies[0]?.model, 'glm-override')
+    assert.deepEqual(endpoint.bodies[0]?.thinking, {
+      type: 'enabled',
+      clear_thinking: false,
+    })
+    assert.equal(endpoint.bodies[0]?.reasoning_effort, 'max')
+  } finally {
+    restoreEnv(saved)
+    await close(server)
+    await endpoint.close()
   }
 })

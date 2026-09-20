@@ -2,10 +2,10 @@ import type { ProviderId } from '../../shared/analysis.ts'
 
 /**
  * A deployment can configure a single OpenAI-compatible gateway (LLM_*) that
- * serves several model families. Upstream resolves GPT/Qwen credentials
+ * serves several model families. Upstream resolves GPT/Qwen/GLM credentials
  * strictly, so without an alias such a gateway could not list its models for
- * GPT/Qwen — the picker would report an error instead of the configured
- * baseURL's model list, and every GPT/Qwen turn would be rejected even though
+ * those providers — the picker would report an error instead of the configured
+ * baseURL's model list, and every turn would be rejected even though
  * the gateway is reachable.
  *
  * This seam knows nothing about upstream's logic: it only copies missing
@@ -14,7 +14,7 @@ import type { ProviderId } from '../../shared/analysis.ts'
  * configured provider (for example a key without a URL) is never touched so it
  * keeps reporting its own, accurate error.
  */
-const FALLBACK_PROVIDERS: ProviderId[] = ['gpt', 'qwen']
+const FALLBACK_PROVIDERS: ProviderId[] = ['gpt', 'qwen', 'glm']
 
 /** Generic-channel variables a fallback provider copies when it has none. */
 const FALLBACK_FIELDS = [
@@ -42,6 +42,7 @@ const PROVIDER_TIMEOUT_KEYS = [
   'LLM_API_TIMEOUT_MS',
   'GPT_API_TIMEOUT_MS',
   'QWEN_API_TIMEOUT_MS',
+  'GLM_API_TIMEOUT_MS',
 ] as const
 
 /**
@@ -90,7 +91,7 @@ export function providerFallbackDisabled(
 }
 
 function prefixOf(provider: ProviderId): string {
-  return provider === 'gpt' ? 'GPT' : 'QWEN'
+  return provider === 'gpt' ? 'GPT' : provider === 'qwen' ? 'QWEN' : 'GLM'
 }
 
 /**

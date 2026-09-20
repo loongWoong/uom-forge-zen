@@ -94,6 +94,8 @@ test('provider ids are validated while reading request bodies', () => {
   assert.equal(isProviderId('deepseek'), true)
   assert.equal(isProviderId('gpt'), true)
   assert.equal(isProviderId('qwen'), true)
+  // 上游新增的提供方自动获得同样的注入（清单从共享注册表派生）。
+  assert.equal(isProviderId('glm'), true)
   assert.equal(isProviderId('codex'), false)
   assert.equal(isProviderId(42), false)
 })

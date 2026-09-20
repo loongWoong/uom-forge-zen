@@ -21,6 +21,8 @@ export interface PiModelSettings {
   contextWindow: number
   /** Send `thinking: { type: 'disabled' }` on every request (DeepSeek-style endpoints). */
   disableThinking: boolean
+  /** Send GLM's required `thinking: { type: 'enabled', clear_thinking: false }` (GLM-5.3-Flash refuses to run without it). */
+  glmThinking?: boolean
   /** Send `reasoning_effort` when thinking is not disabled (OpenAI-style endpoints). */
   reasoningEffort?: string
   /** Explicit pi-ai compatibility overrides; empty means "auto-detect from URL". */
@@ -103,14 +105,29 @@ interface ProviderProfile {
   reasoningEffort?: string
   /** Direct requests carry `thinking: { type: 'disabled' }` for this provider. */
   disableThinking: boolean
+  /** Direct requests carry GLM's mandatory enabled-thinking parameters. */
+  glmThinking?: boolean
   piProvider: string
   /** Per-provider pi-ai compat that keeps Pi requests aligned with the direct client. */
   compat: OpenAICompletionsCompat
 }
 
+/** Environment-variable prefix of one provider (GLM_API_* etc.). */
+function envPrefix(provider: ProviderId): string {
+  return provider === 'gpt'
+    ? 'GPT'
+    : provider === 'qwen'
+      ? 'QWEN'
+      : provider === 'glm'
+        ? 'GLM'
+        : 'LLM'
+}
+
 function credentialNames(provider: ProviderId): string {
-  const prefix = provider === 'gpt' ? 'GPT' : provider === 'qwen' ? 'QWEN' : 'LLM'
-  return `${prefix}_API_KEY 或 ${prefix}_API_URL`
+  // GLM has an upstream default endpoint, so only the key is mandatory.
+  return provider === 'glm'
+    ? 'GLM_API_KEY'
+    : `${envPrefix(provider)}_API_KEY 或 ${envPrefix(provider)}_API_URL`
 }
 
 /**
@@ -144,7 +161,7 @@ function providerProfile(
   env: NodeJS.ProcessEnv,
 ): ProviderProfile {
   if (provider !== 'deepseek' && inheritedProviders(env).includes(provider)) {
-    const prefix = provider === 'gpt' ? 'GPT' : 'QWEN'
+    const prefix = envPrefix(provider)
     const generic = genericProfile(env)
     return {
       ...generic,
@@ -152,6 +169,31 @@ function providerProfile(
       model: env[`${prefix}_MODEL`]?.trim() || generic.model,
     }
   }
+  if (provider === 'glm')
+    return {
+      label: 'GLM',
+      apiKey: env.GLM_API_KEY,
+      // Upstream's default: GLM coding-plan keys are provisioned against this
+      // endpoint (server/providers/model-config.ts).
+      url: env.GLM_API_URL || 'https://open.bigmodel.cn/api/coding/paas/v4',
+      model: env.GLM_MODEL || 'glm-5.3-flash',
+      timeoutEnv: env.GLM_API_TIMEOUT_MS,
+      maxOutputTokens: positiveInt(
+        env.GLM_MAX_OUTPUT_TOKENS,
+        'GLM_MAX_OUTPUT_TOKENS',
+        32768,
+      ),
+      reasoningEffort: env.GLM_REASONING_EFFORT || 'max',
+      disableThinking: false,
+      // GLM-5.3-Flash requires thinking, including tool handoff/retry turns.
+      glmThinking: true,
+      piProvider: 'zai',
+      compat: {
+        supportsStore: false,
+        supportsStrictMode: false,
+        maxTokensField: 'max_tokens',
+      },
+    }
   if (provider === 'gpt')
     return {
       label: 'GPT',
@@ -272,6 +314,7 @@ export function resolveModelConfig(
     ...(disableThinking || piEffort === undefined
       ? {}
       : { reasoningEffort: piEffort }),
+    ...(profile.glmThinking && !disableThinking ? { glmThinking: true } : {}),
     compat: piCompat(env, generic, profile.compat),
   }
   return {
@@ -305,6 +348,14 @@ export function modelProviderConfig(
   provider: ProviderId,
   env: NodeJS.ProcessEnv = process.env,
 ): ModelProviderConfig {
+  if (provider === 'glm')
+    return {
+      label: 'GLM',
+      apiKey: env.GLM_API_KEY,
+      url: env.GLM_API_URL || 'https://open.bigmodel.cn/api/coding/paas/v4',
+      model: env.GLM_MODEL || 'glm-5.3-flash',
+      piProvider: 'zai',
+    }
   if (provider === 'gpt')
     return {
       label: 'GPT',
@@ -336,8 +387,6 @@ export function requireModelProviderConfig(
 ): ModelProviderConfig {
   const config = modelProviderConfig(provider, env)
   if (!config.apiKey || !config.url)
-    throw new Error(
-      `${config.label} 未配置 ${provider === 'gpt' ? 'GPT_API_KEY 或 GPT_API_URL' : provider === 'qwen' ? 'QWEN_API_KEY 或 QWEN_API_URL' : 'LLM_API_KEY 或 LLM_API_URL'}。`,
-    )
+    throw new Error(`${config.label} 未配置 ${credentialNames(provider)}。`)
   return config
 }

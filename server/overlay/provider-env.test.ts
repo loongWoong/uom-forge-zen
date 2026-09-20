@@ -24,8 +24,8 @@ function genericEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 test('unconfigured providers follow the generic channel', () => {
   const env = genericEnv()
   const result = inheritProviderEndpoints(env)
-  assert.deepEqual(result.providers, ['gpt', 'qwen'])
-  for (const prefix of ['GPT', 'QWEN']) {
+  assert.deepEqual(result.providers, ['gpt', 'qwen', 'glm'])
+  for (const prefix of ['GPT', 'QWEN', 'GLM']) {
     assert.equal(env[`${prefix}_API_URL`], 'http://gw.test/v1')
     assert.equal(env[`${prefix}_API_KEY`], 'generic-key')
     assert.equal(env[`${prefix}_MODEL`], 'gw-default')
@@ -46,18 +46,23 @@ test('explicit provider configuration always wins', () => {
     QWEN_API_URL: 'http://qwen.test/v1',
     QWEN_API_KEY: 'qwen-key',
     QWEN_MODEL: 'qwen-real',
+    GLM_API_URL: 'http://zhipu.test/v4',
+    GLM_API_KEY: 'glm-key',
+    GLM_MODEL: 'glm-real',
   })
   assert.deepEqual(inheritProviderEndpoints(env), { providers: [], keys: [] })
   assert.equal(env.GPT_API_URL, 'http://openai.test/v1')
   assert.equal(env.GPT_MODEL, 'gpt-real')
   assert.equal(env.QWEN_API_URL, 'http://qwen.test/v1')
   assert.equal(env.QWEN_MODEL, 'qwen-real')
+  assert.equal(env.GLM_API_URL, 'http://zhipu.test/v4')
+  assert.equal(env.GLM_MODEL, 'glm-real')
 })
 
 test('a partially configured provider keeps its own accurate error', () => {
   const env = genericEnv({ GPT_API_KEY: 'only-a-key' })
   const result = inheritProviderEndpoints(env)
-  assert.deepEqual(result.providers, ['qwen'])
+  assert.deepEqual(result.providers, ['qwen', 'glm'])
   // GPT keeps its own (incomplete) configuration, so upstream still reports it.
   assert.equal(env.GPT_API_URL, undefined)
   assert.throws(() => resolveModelConfig('gpt', { env }), /GPT_API_URL/)
@@ -65,7 +70,7 @@ test('a partially configured provider keeps its own accurate error', () => {
 
 test('empty values count as unset, as in a copied .env.example', () => {
   const env = genericEnv({ GPT_API_URL: '', GPT_API_KEY: '', QWEN_API_URL: '  ' })
-  assert.deepEqual(inheritProviderEndpoints(env).providers, ['gpt', 'qwen'])
+  assert.deepEqual(inheritProviderEndpoints(env).providers, ['gpt', 'qwen', 'glm'])
   assert.equal(env.GPT_API_URL, 'http://gw.test/v1')
   assert.equal(env.QWEN_API_URL, 'http://gw.test/v1')
 })
@@ -80,7 +85,7 @@ test('an inherited provider behaves like the generic channel', () => {
   const env = genericEnv()
   inheritProviderEndpoints(env)
   const generic = resolveModelConfig('deepseek', { env })
-  for (const provider of ['gpt', 'qwen'] as const) {
+  for (const provider of ['gpt', 'qwen', 'glm'] as const) {
     const config = resolveModelConfig(provider, { env })
     assert.equal(config.baseUrl, generic.baseUrl)
     assert.equal(config.modelId, generic.modelId)
@@ -116,7 +121,7 @@ test('the picker lists the models of the baseURL the turn will call', async () =
   }) as typeof fetch
   try {
     // Exactly the deployment that used to answer "HTTP 502" for GPT/Qwen.
-    for (const provider of ['gpt', 'qwen'] as const) {
+    for (const provider of ['gpt', 'qwen', 'glm'] as const) {
       const listed = await listEndpointModels(provider, env)
       assert.deepEqual(listed.models, ['qwen3.8-flash', 'glm-5.3'])
       assert.equal(listed.endpoint, 'http://gw.test/v1')
@@ -128,6 +133,7 @@ test('the picker lists the models of the baseURL the turn will call', async () =
         ['deepseek', true, 'gw-default', 'http://gw.test/v1'],
         ['gpt', true, 'gw-default', 'http://gw.test/v1'],
         ['qwen', true, 'gw-default', 'http://gw.test/v1'],
+        ['glm', true, 'gw-default', 'http://gw.test/v1'],
       ],
     )
   } finally {
@@ -136,13 +142,14 @@ test('the picker lists the models of the baseURL the turn will call', async () =
   assert.deepEqual(requested, [
     'http://gw.test/v1/models | Bearer generic-key',
     'http://gw.test/v1/models | Bearer generic-key',
+    'http://gw.test/v1/models | Bearer generic-key',
   ])
 })
 
 test('the inherited marker disappears once every provider stands on its own', () => {
   const env = genericEnv()
   inheritProviderEndpoints(env)
-  assert.deepEqual(inheritedProviders(env), ['gpt', 'qwen'])
+  assert.deepEqual(inheritedProviders(env), ['gpt', 'qwen', 'glm'])
   // The operator later configures real per-provider endpoints in .env.
   const configured = genericEnv({
     GPT_API_URL: 'http://openai.test/v1',
@@ -151,18 +158,21 @@ test('the inherited marker disappears once every provider stands on its own', ()
     QWEN_API_URL: 'http://dashscope.test/v1',
     QWEN_API_KEY: 'qwen-key',
     QWEN_MODEL: 'qwen-real',
+    GLM_API_URL: 'http://zhipu.test/v4',
+    GLM_API_KEY: 'glm-key',
+    GLM_MODEL: 'glm-real',
   })
   delete configured[INHERITED_ENV_KEY]
   // Simulate the same process re-running the alias with the new environment:
   // the stale marker must not keep the generic profile stuck on gpt/qwen.
-  configured[INHERITED_ENV_KEY] = 'gpt,qwen'
+  configured[INHERITED_ENV_KEY] = 'gpt,qwen,glm'
   inheritProviderEndpoints(configured)
   assert.deepEqual(inheritedProviders(configured), [])
   assert.equal(resolveModelConfig('gpt', { env: configured }).modelId, 'gpt-real')
 })
 
 test('UOM_PROVIDER_FALLBACK=off also clears a marker from an earlier start', () => {
-  const env = genericEnv({ UOM_PROVIDER_FALLBACK: 'off', [INHERITED_ENV_KEY]: 'gpt,qwen' })
+  const env = genericEnv({ UOM_PROVIDER_FALLBACK: 'off', [INHERITED_ENV_KEY]: 'gpt,qwen,glm' })
   const result = inheritProviderEndpoints(env)
   assert.deepEqual(result.providers, [])
   assert.deepEqual(inheritedProviders(env), [])

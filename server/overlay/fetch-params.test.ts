@@ -158,3 +158,62 @@ test('individual compatibility switches win over the defaults', () => {
   assert.equal(body.max_tokens, 16384)
   assert.equal(body.max_completion_tokens, undefined)
 })
+
+test('a GLM request keeps its mandatory thinking and vendor parameters', () => {
+  const glmEnv: NodeJS.ProcessEnv = {
+    GLM_API_KEY: 'glm-key',
+    GLM_MODEL: 'glm-configured',
+  }
+  const config = resolveModelConfig('glm', { env: glmEnv })
+  // 上游默认端点（coding-plan），只需 GLM_API_KEY。
+  assert.equal(config.baseUrl, 'https://open.bigmodel.cn/api/coding/paas/v4')
+  assert.equal(config.modelId, 'glm-configured')
+  assert.equal(config.piProvider, 'zai')
+  assert.equal(config.pi.glmThinking, true)
+  assert.equal(config.pi.reasoningEffort, 'max')
+  const body: Record<string, unknown> = {
+    model: 'glm-5.3-flash',
+    messages: [],
+    thinking: { type: 'enabled', clear_thinking: false },
+    reasoning_effort: 'max',
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 32768,
+  }
+  rewriteChatBody(body, config, glmEnv)
+  // GLM-5.3-Flash 强制开思考：改写不得剥掉 thinking/temperature/top_p。
+  assert.deepEqual(body.thinking, { type: 'enabled', clear_thinking: false })
+  assert.equal(body.reasoning_effort, 'max')
+  assert.equal(body.temperature, 1)
+  assert.equal(body.top_p, 0.95)
+  assert.equal(body.model, 'glm-configured')
+  assert.equal(body.max_tokens, 32768)
+})
+
+test('the GLM default endpoint resolves to the glm provider', () => {
+  assert.equal(
+    providerForUrl(
+      'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+      { GLM_API_KEY: 'k' },
+    ),
+    'glm',
+  )
+})
+
+test('an inherited GLM follows the generic channel like GPT/Qwen', () => {
+  const inherited = { ...env }
+  inheritProviderEndpoints(inherited)
+  const config = resolveModelConfig('glm', { env: inherited })
+  assert.equal(config.baseUrl, 'http://deepseek.invalid/v1')
+  assert.equal(config.pi.glmThinking, undefined)
+  assert.equal(config.pi.disableThinking, true)
+  const body: Record<string, unknown> = {
+    model: 'glm-5.3-flash',
+    messages: [],
+    thinking: { type: 'enabled', clear_thinking: false },
+    reasoning_effort: 'max',
+  }
+  rewriteChatBody(body, config, inherited)
+  assert.deepEqual(body.thinking, { type: 'disabled' })
+  assert.equal(body.reasoning_effort, undefined)
+})

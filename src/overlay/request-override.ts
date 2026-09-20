@@ -1,4 +1,4 @@
-import type { ProviderId } from '../../shared/analysis.ts'
+import { PROVIDERS, type ProviderId } from '../../shared/analysis.ts'
 
 /**
  * Client-side fetch decorator: injects the picker's per-provider model override
@@ -8,10 +8,12 @@ import type { ProviderId } from '../../shared/analysis.ts'
  */
 
 const OVERRIDE_PREFIX = 'uom-forge-model-'
-const PROVIDERS: ProviderId[] = ['deepseek', 'gpt', 'qwen']
+// Derived from the shared registry so a new upstream provider (e.g. glm)
+// gets override injection without touching this file.
+const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[]
 
 export function isProviderId(value: unknown): value is ProviderId {
-  return typeof value === 'string' && (PROVIDERS as string[]).includes(value)
+  return typeof value === 'string' && (PROVIDER_IDS as string[]).includes(value)
 }
 
 export function modelOverrideFor(

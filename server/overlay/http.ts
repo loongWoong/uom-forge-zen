@@ -146,7 +146,13 @@ function readModelOverride(body: Record<string, unknown>): {
 
 function readProvider(body: Record<string, unknown>): ProviderId | undefined {
   const value = body.provider
-  if (value === 'deepseek' || value === 'gpt' || value === 'qwen') return value
+  if (
+    value === 'deepseek' ||
+    value === 'gpt' ||
+    value === 'qwen' ||
+    value === 'glm'
+  )
+    return value
   // Upstream resolves a missing `provider` from UOM_LLM_PROVIDER. The fetch
   // decorator has to name the same provider, otherwise it rewrites the request
   // with another provider's model and vendor parameters (e.g. a GPT turn sent

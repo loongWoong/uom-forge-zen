@@ -1,7 +1,10 @@
 import type { ProviderId } from '../../shared/analysis.ts'
 import { normalizeEndpoint, type ModelConfig } from './model-config.ts'
 
-const PROVIDER_ORDER: ProviderId[] = ['deepseek', 'gpt', 'qwen']
+const PROVIDER_ORDER: ProviderId[] = ['deepseek', 'gpt', 'qwen', 'glm']
+
+/** Upstream's default GLM endpoint (server/providers/model-config.ts). */
+const DEFAULT_GLM_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
 
 function envBoolean(
   value: string | undefined,
@@ -17,6 +20,7 @@ function providerUrls(env: NodeJS.ProcessEnv): Record<ProviderId, string> {
     deepseek: env.LLM_API_URL || '',
     gpt: env.GPT_API_URL || '',
     qwen: env.QWEN_API_URL || '',
+    glm: env.GLM_API_URL || DEFAULT_GLM_URL,
   }
 }
 
@@ -79,6 +83,12 @@ export function rewriteChatBody(
   if (config.pi.disableThinking) {
     body.thinking = { type: 'disabled' }
     delete body.reasoning_effort
+  } else if (config.pi.glmThinking) {
+    // GLM-5.3-Flash requires thinking, including tool handoff/retry turns;
+    // stripping it (like the GPT branch below) would degrade the model.
+    body.thinking = { type: 'enabled', clear_thinking: false }
+    if (config.pi.reasoningEffort !== undefined)
+      body.reasoning_effort = config.pi.reasoningEffort
   } else if (config.pi.reasoningEffort !== undefined) {
     body.reasoning_effort = config.pi.reasoningEffort
     delete body.thinking

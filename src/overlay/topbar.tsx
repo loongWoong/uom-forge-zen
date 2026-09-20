@@ -22,11 +22,14 @@ import { projectTimestamp, type ProjectSummary } from './project-store.ts'
  * requests by the fetch decorator. Nothing in upstream's component tree changes.
  */
 
-const PROVIDER_IDS: ProviderId[] = ['deepseek', 'gpt', 'qwen']
+// Derived from the shared registry so a new upstream provider (e.g. glm)
+// is picked up without touching this file; the order matches the buttons.
+const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[]
 const PROVIDER_BADGES: Record<ProviderId, string> = {
   deepseek: 'DS',
   gpt: 'GPT',
   qwen: 'QW',
+  glm: 'GLM',
 }
 
 interface ProviderConfig {

@@ -64,16 +64,23 @@ export function providerDescriptor(
   const gptModel = env.GPT_MODEL || 'gpt-6-astra'
   const qwenReady = Boolean(env.QWEN_API_URL && env.QWEN_API_KEY)
   const qwenModel = env.QWEN_MODEL || 'Qwen3.6'
+  // GLM has an upstream default endpoint, so only the key is mandatory.
+  const glmReady = Boolean(env.GLM_API_KEY)
+  const glmModel = env.GLM_MODEL || 'glm-5.3-flash'
   const provider = resolveProvider(env.UOM_LLM_PROVIDER)
   const models: Record<ProviderId, string> = {
     deepseek: deepseekModel,
     gpt: gptModel,
     qwen: qwenModel,
+    glm: glmModel,
   }
   const endpoints: Record<ProviderId, string | undefined> = {
     deepseek: publicEndpoint(env.LLM_API_URL),
     gpt: publicEndpoint(env.GPT_API_URL),
     qwen: publicEndpoint(env.QWEN_API_URL),
+    glm: publicEndpoint(
+      env.GLM_API_URL || 'https://open.bigmodel.cn/api/coding/paas/v4',
+    ),
   }
   const option = (
     value: ProviderId,
@@ -97,6 +104,7 @@ export function providerDescriptor(
       option('deepseek', deepseekModel, deepseekReady),
       option('gpt', gptModel, gptReady),
       option('qwen', qwenModel, qwenReady),
+      option('glm', glmModel, glmReady),
     ],
   }
 }
@@ -122,12 +130,17 @@ export async function listEndpointModels(
     deepseek: { prefix: 'LLM', url: env.LLM_API_URL, key: env.LLM_API_KEY },
     gpt: { prefix: 'GPT', url: env.GPT_API_URL, key: env.GPT_API_KEY },
     qwen: { prefix: 'QWEN', url: env.QWEN_API_URL, key: env.QWEN_API_KEY },
+    glm: {
+      prefix: 'GLM',
+      url: env.GLM_API_URL || 'https://open.bigmodel.cn/api/coding/paas/v4',
+      key: env.GLM_API_KEY,
+    },
   }
   const { prefix, url: configuredUrl, key: apiKey } = credentials[provider]
-  if (!configuredUrl || !apiKey)
-    throw new Error(
-      `${label} 未配置 ${prefix}_API_KEY 或 ${prefix}_API_URL，无法获取模型列表。`,
-    )
+  if (!configuredUrl)
+    throw new Error(`${label} 未配置 ${prefix}_API_URL，无法获取模型列表。`)
+  if (!apiKey)
+    throw new Error(`${label} 未配置 ${prefix}_API_KEY，无法获取模型列表。`)
   const baseUrl = normalizeEndpoint(configuredUrl)
   const endpoint = publicEndpoint(configuredUrl) as string
   const timeoutMs = modelsTimeoutMs(env)

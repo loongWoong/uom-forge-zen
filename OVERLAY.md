@@ -66,7 +66,7 @@ tools/
 | 本地功能 | 装饰方式 |
 | --- | --- |
 | `.env` 加载（项目根 + 上级 UOM 目录；改 .env 后配置热加载） | `server/overlay/vite-config.ts` 先加载环境，再动态 `import('../../vite.config.ts')` 组合 |
-| 单网关部署下 GPT/Qwen 复用通用通道 | `provider-env.ts` 在启动时把未配置的 `GPT_*`/`QWEN_*` 从 `LLM_*` 补齐（URL/KEY/MODEL/超时/输出上限），使模型列表与请求命中同一个 baseURL；显式配置优先，`UOM_PROVIDER_FALLBACK=off` 关闭 |
+| 单网关部署下 GPT/Qwen/GLM 复用通用通道 | `provider-env.ts` 在启动时把未配置的 `GPT_*`/`QWEN_*`/`GLM_*` 从 `LLM_*` 补齐（URL/KEY/MODEL/超时/输出上限），使模型列表与请求命中同一个 baseURL；显式配置优先，`UOM_PROVIDER_FALLBACK=off` 关闭。GLM 显式配置时携带其必需的 `thinking:{type:'enabled',clear_thinking:false}` + `reasoning_effort`（GLM-5.3-Flash 强制开思考） |
 | Pi 阶段超时跟随 provider 超时 | `provider-env.ts` 的 `applyPiStageTimeout`：`UOM_PI_TIMEOUT_MS` 未设置时，取各 provider `*_API_TIMEOUT_MS` 的最大值写入（上游 `piSignal` 只读这一个变量，否则 5 分钟就中断慢端点）；显式设置永远优先 |
 | `/api/config`、`/api/models` 路由 | overlay middleware 注册在上游 API plugin 之前；命中即响应，其余 `next()` 委托；`/api/models` 返回 `{models, endpoint}`，把列表来源的 baseURL 暴露给界面，并用 `AbortSignal.timeout`（`UOM_MODELS_TIMEOUT_MS`，默认 10000）兜住不回话的网关，否则选择器会永远停在“正在获取模型列表…” |
 | `modelOverride`（每次请求切换模型） | `http.ts` 缓冲请求体 → 校验 → 存入 AsyncLocalStorage；`fetch-overlay.ts` 在发出的请求体里改写 `model` |
@@ -144,7 +144,7 @@ rmdir 临时目录），请改用 `node tools/overlay.mjs test`（同模式，�
 - **`pull-upstream.mjs` 只能校验“上游已有的文件”**：若上游未来新增一个与本地
   overlay 同名的文件（例如 `OVERLAY.md`、`tools/overlay.mjs`），合并仍会报 add/add
   冲突，需要人工选一侧。
-- **GPT/Qwen 端点的回退只影响环境变量**：`provider-env.ts` 只填空值；若某提供方
+- **GPT/Qwen/GLM 端点的回退只影响环境变量**：`provider-env.ts` 只填空值；若某提供方
   只配了一半（例如只有 key 没有 URL），overlay 不会补另一半，该提供方继续报自己的
   "未配置"错误，以免把请求发到错误的端点。
 
